@@ -1,0 +1,243 @@
+# Learning OS — Core plane contract (V0.4)
+#
+# Plane ownership follows the canonical V0.4 separation architecture (§15):
+# Core owns reusable product semantics only. Copy-by-value source for the
+# reusable behavior blocks is the legacy V0.3 production configuration.
+#
+# This Core tree is NONCANONICAL and NOT DEPLOYED. Canonical production
+# remains suxyddjdgys-arch/learning-os release 0.3.2, topology LEGACY.
+#
+# Forbidden everywhere in the Core plane (enforced by validate_core):
+#   real learner state, real Evidence, learner execution/Branch runtime,
+#   private lineage/control state, Instance repository identity,
+#   deployment epoch / write_state / active deployment pins,
+#   migration authorization, secrets/credentials.
+
+schema_version: "0.4"
+document_type: core_config
+updated_at: 2026-08-24T09:30:55+08:00
+
+product:
+  id: learning-os
+  name: Learning OS
+
+manifest:
+  release: "0.4.0-candidate"
+  artifact_schema: "0.4"
+  # Existing Instance artifacts stay schema 0.3 through migration (D2);
+  # the Core manifest declares the supported Instance schema versions.
+  supported_instance_schema_versions:
+    - "0.3"
+  canonical_status: noncanonical
+  deployment_status: not_deployed
+
+# Reusable modes / roles / naming semantics (copy-by-value from legacy V0.3).
+chat_routing:
+  modes:
+    - learning
+    - model_review
+    - learning_os
+  learning_identity:
+    topic_required: true
+    subtopic_optional: true
+    roles:
+      - hub
+      - main
+      - practice
+      - deep_dive
+    lineage_generation_when_materialized: true
+  suggested_names:
+    learning_os: "000 | Learning OS | <Cxx>"
+    learning_hub: "001 | Learning Hub | <Cxx>"
+    topic_hub: "010 | <Topic> | Hub | <Cxx>"
+    learning_main: "011 | <Topic> | <Subtopic> | Main | <Cxx>"
+    learning_practice: "012 | <Topic> | <Subtopic> | Practice | <Cxx>"
+    learning_deep_dive: "013 | <Topic> | <Subtopic> | Deep Dive | <Cxx>"
+    model_review: "900 | Model Review | <Cxx>"
+  conversation_name_behavior:
+    suggest_on_first_turn: true
+    resolve_identity_before_suggestion: true
+    template_source: chat_routing.suggested_names
+    conversation_sequence_label: Cxx
+    conversation_sequence_independent_of_generation: true
+    sequence_registry: runtime/ui/conversation-sequences.yaml
+    sequence_policy: protocol/conversation-naming-policy.md
+    allocation_mode: cas_monotonic_reservation
+    allocation_write_is_lineage_governed: false
+    allocation_write_scope: sequence_registry_only
+    allocation_grants_writer_authority: false
+    fail_closed_on_allocation_error: true
+    if_ui_rename_unavailable: report_suggestion_only
+  numeric_prefix_is_semantic: false
+
+# Reliable timestamp semantics (Core product semantics). The concrete
+# display timezone is learner-local state owned by the Instance plane.
+time:
+  timestamp_format: iso8601
+  require_reliable_source: true
+  timezone_ownership: instance
+
+# Reusable teaching / learning / interaction behavior (copy-by-value from
+# legacy V0.3). Deployment-bound routing (persistent_store, project lineage
+# control paths, bootstrap documents) is NOT Core-owned and is absent here.
+runtime:
+  state_update_visibility:
+    learning_chat: important_only
+    model_review: detailed
+    learning_os: detailed
+  learning_surface:
+    progress_summary:
+      enabled: true
+      derive_from_item_statuses: true
+      render: compact_bar_plus_a_over_b
+      bar_width: 10
+      show_on:
+        - first_substantive_learning_turn_or_resume
+        - explicit_progress_or_plan_request
+        - milestone_transition
+        - material_plan_or_execution_replan
+      include:
+        - topic
+        - active_subtopic
+        - weekly_if_materialized
+        - daily_if_materialized
+      mastery_is_progress: false
+    planning_summary:
+      show_topic_route_on_intake_or_material_replan: true
+      show_weekly_when_materialized: true
+      show_branch_overview_when_multiple_materialized: true
+      weekly_activation:
+        prefer_first_substantive_learning_or_planning_turn_in_new_week: true
+        evaluate_on_substantive_bootstrap_resume_or_planning_turn_while_current_week_unmaterialized: true
+        candidate_if_no_current_weekly_window: true
+        candidate_persists_until_materialized_or_explicitly_deferred: true
+        catch_up_after_missed_activation: true
+        resource_signals:
+          - learner_global_weekly_budget
+          - active_topic_desired_hours_per_week
+        when_candidate:
+          execution_protocol_is_relevant: true
+          load_execution_policy: true
+          propose_and_normally_materialize: true
+        single_active_topic_owner_class: delegated_topic_hub
+        single_active_topic_executor:
+          prefer_dedicated_topic_hub_if_materialized: true
+          otherwise_active_main_branch_is_default_delegated_executor: true
+          physical_topic_hub_required: false
+          require_active_branch_generation_guard_for_branch_originated_write: true
+          main_role_alone_is_not_a_valid_reason_to_refuse: true
+        cross_topic_allocation_owner_class: global_hub
+        never_promote_topic_hours_to_global_budget_without_resolution: true
+        must_not_block_safe_short_learning: true
+    teaching_architecture:
+      enabled: true
+      keep_compact_orientation_when_material:
+        - topic_or_subtopic_entry
+        - material_route_change
+        - learner_reports_disorientation
+      diagnostic_target_before_probe: true
+      minimize_unrelated_probe_dependencies: true
+      just_in_time_must_anchor_to_established_knowledge: true
+      learner_not_responsible_for_detecting_hidden_prerequisites: true
+      future_objects_require_declared_black_box_or_dependency_repair: true
+      terminology_must_not_substitute_for_explanation: true
+      prefer_role_mechanism_consequence_connection_closure: true
+      explain_material_route_deviation_and_return_path: true
+      reusable_probe_design:
+        prefer_sparse_high_quality_anchors: true
+        curated_anchor_is_candidate_not_universal_mastery_test: true
+        runtime_generation_must_apply_same_target_and_confound_checks: true
+        external_items_require_correctness_alignment_prerequisite_and_provenance_review: true
+        do_not_bulk_materialize_for_volume: true
+    continuity_lifecycle:
+      enabled: true
+      decisions:
+        - continue_current
+        - recommend_handoff
+        - execute_handoff
+        - resume
+      assistant_may_detect_and_recommend: true
+      execute_handoff_requires_learner_authorization: true
+      recommend_when_material:
+        - context_capacity_or_continuity_risk
+        - learner_requests_fresh_conversation_same_branch
+        - substantial_testing_debugging_or_admin_context_degrades_learning_surface
+        - current_physical_surface_is_unreliable_or_cumbersome_for_teaching_continuity
+      never_auto_execute_for:
+        - elapsed_time_or_inactivity
+        - day_or_week_boundary
+        - fixed_message_turn_token_or_context_percentage
+        - concept_milestone_subtopic_or_topic_completion
+        - ordinary_weekly_daily_reconciliation
+        - ordinary_replan_or_route_adjustment
+      recommendation_does_not_change_branch_runtime: true
+      runtime_context_pressure_is_noncanonical: true
+    verbosity: compact
+  persistence:
+    persist_low_value_observations: false
+    evidence_first: true
+    prefer_session_boundary_aggregation: true
+
+# Bootstrap validation algorithm and post-trust-resolution loading rules
+# (copy-by-value from legacy V0.3 bootstrap semantics).
+bootstrap:
+  validation_algorithm: "scripts/validate_learning_os.py <core_snapshot> --core"
+  loading:
+    prefer_v03_topic_state: true
+    load_repository_governance_before_mutation: true
+    load_learner_background: relevant_only
+    load_global_learner_model: relevant_only
+    load_learner_knowledge: relevant_only_if_materialized
+    load_topic_goal: true
+    load_topic_plan: true
+    load_topic_progress: true
+    load_topic_deferred: if_materialized
+    load_current_subtopic: if_materialized
+    load_execution: if_materialized_and_relevant
+    load_teaching_decision_on_substantive_learning_turn: true
+    load_curriculum_policy_if_orientation_prerequisite_probe_or_route_decision_relevant: true
+    load_domain_curriculum_if_orientation_or_probe_selection_needs_domain_structure: true
+    evaluate_weekly_activation_candidate: true
+    weekly_activation_candidate_persists_while_current_week_unmaterialized: true
+    load_execution_policy_if_weekly_activation_candidate: true
+    evaluate_conversation_lifecycle: true
+    load_continuity_policy_if_handoff_candidate_transition_or_resume: true
+    load_branch_runtime: if_materialized
+    load_evidence_by_default: false
+    load_curriculum_by_default: false
+
+# Protocol routing (copy-by-value from legacy V0.3).
+protocol:
+  runtime_core: protocol/runtime-core.md
+  new_topic_start: protocol/new-topic-start.md
+  conversation_naming: protocol/conversation-naming-policy.md
+  evidence_classification: protocol/evidence-classification.md
+  evidence_integration: protocol/evidence-integration.md
+  teaching_decision: protocol/teaching-decision.md
+  curriculum: protocol/curriculum-policy.md
+  execution: protocol/execution-policy.md
+  coordination: protocol/coordination-policy.md
+  project_handoff: protocol/project-handoff-policy.md
+  continuity: protocol/continuity-policy.md
+  persistence: protocol/persistence-policy.md
+  repository_governance: protocol/repository-governance-policy.md
+  schema: protocol/schema.md
+
+# Reusable governance semantics for the Core plane itself. Actual GitHub
+# settings remain platform state; this is the semantic contract.
+governance:
+  core_mutation:
+    model: pull_request_required
+    force_push: forbidden
+    deletion: forbidden
+    required_checks:
+      - validate-core
+  authority_semantics: protocol/repository-governance-policy.md
+
+# Stable reusable template / domain declarations present in this Core tree.
+# Instance-local domains and real learner curricula are NOT Core material;
+# the real modern-language-models curriculum is deferred (D5).
+domains:
+  reusable_bases:
+    - _template
+  template: domains/_template/curriculum.yaml

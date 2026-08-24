@@ -1,15 +1,16 @@
 from __future__ import annotations
 """V0.4-B2-B split-aware Instance validation test envelope.
 
-验证面：validate_instance(instance_snapshot, deployed_core, trusted_context)。
+验证面：validate_instance(instance_snapshot, deployed_core, deployment_binding)。
 
 Fixture 策略（synthetic-only）：
 - 全部 fixture 为程序化临时目录（tempfile），不落盘 tests/fixtures/**，
   不含任何真实 learner 状态、真实 Evidence 或真实凭证。
 - deployed_core 是合成物化的 Core 快照（仅 load_core 所需的最小面：
   config/core.yaml + domains/<base>/curriculum.yaml）。
-- trusted_context 是合成 trusted deployment context；live binding
-  （epoch enforcement / write_state routing / ID 解析）属 B2-C，不在本面实现。
+- deployment_binding 是合成 trusted deployment binding（B2-B 定义的
+  synthetic fixture 形态）；live binding（epoch enforcement /
+  write_state routing / ID 解析）属 resolver/runtime surface，不在本面实现。
 
 另含一条集成测试：用真实物化 Core 仓库树作为 deployed_core（证明 exact
 Core snapshot 满足 load_core 契约）。真实 Instance 快照的 exact 验证在
@@ -45,8 +46,8 @@ def write_yaml(root: Path, rel: str, data: dict) -> None:
     write_file(root, rel, yaml.safe_dump(data, sort_keys=False, allow_unicode=True))
 
 
-def trusted_context(core_commit: str | None = None) -> dict:
-    """合成 trusted deployment context（B2-B 唯一定义的 synthetic 形态）。"""
+def deployment_binding(core_commit: str | None = None) -> dict:
+    """合成 deployment binding（B2-B 唯一定义的 synthetic 形态）。"""
     return {
         "context_type": "synthetic",
         "core_repository_id": CORE_REPO_ID,
@@ -240,7 +241,7 @@ class InstanceValidationTests(unittest.TestCase):
         findings = validate_instance(
             instance if instance is not None else self.instance,
             core if core is not None else self.core,
-            trusted_context() if ctx is _UNSET else ctx,
+            deployment_binding() if ctx is _UNSET else ctx,
         )
         return {f.code for f in findings if f.severity == "error"}
 
@@ -249,7 +250,7 @@ class InstanceValidationTests(unittest.TestCase):
         errors = [f.render() for f in validate_instance(
             instance if instance is not None else self.instance,
             core if core is not None else self.core,
-            trusted_context() if ctx is _UNSET else ctx,
+            deployment_binding() if ctx is _UNSET else ctx,
         ) if f.severity == "error"]
         self.assertEqual([], errors)
 
@@ -345,13 +346,13 @@ class InstanceValidationTests(unittest.TestCase):
         self.assert_pass(core=CORE_REPO_ROOT)
 
     def test_cli_instance_surface_pass(self):
-        # CLI 面：--instance + --core-snapshot + --trusted-context（file 形态）。
-        ctx_file = self.instance.parent / "trusted-context.yaml"
-        write_file(self.instance.parent, "trusted-context.yaml", yaml.safe_dump(trusted_context(), sort_keys=False))
+        # CLI 面：--instance + --core-snapshot + --deployment-binding（file 形态）。
+        ctx_file = self.instance.parent / "deployment-binding.yaml"
+        write_file(self.instance.parent, "deployment-binding.yaml", yaml.safe_dump(deployment_binding(), sort_keys=False))
         result = subprocess.run(
             [sys.executable, str(CORE_REPO_ROOT / "scripts/validate_learning_os.py"),
              str(self.instance), "--instance", "--core-snapshot", str(self.core),
-             "--trusted-context", str(ctx_file)],
+             "--deployment-binding", str(ctx_file)],
             capture_output=True, text=True,
         )
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
@@ -375,9 +376,9 @@ class InstanceValidationTests(unittest.TestCase):
         # deployed_core 缺失：fail closed。
         self.assertIn("instance.core_snapshot", self.errors(core=self.instance / "no-such-core"))
 
-    def test_fail_missing_trusted_context(self):
+    def test_fail_missing_deployment_binding(self):
         # trusted context 缺失：fail closed。
-        self.assertIn("instance.trusted_context", self.errors(ctx=None))
+        self.assertIn("instance.deployment_binding", self.errors(ctx=None))
 
     def test_fail_core_owned_top_level_directory(self):
         # Core 拥有的顶层目录（domains/）出现在 Instance 快照。
@@ -495,26 +496,26 @@ class InstanceValidationTests(unittest.TestCase):
 
     # ===== Negative: trusted context fail-closed 形态 =====
 
-    def test_fail_trusted_context_unknown_key(self):
-        ctx = trusted_context()
+    def test_fail_deployment_binding_unknown_key(self):
+        ctx = deployment_binding()
         ctx["live_endpoint"] = "https://github.example"
-        self.assertIn("instance.trusted_context_keys", self.errors(ctx=ctx))
+        self.assertIn("instance.deployment_binding_keys", self.errors(ctx=ctx))
 
-    def test_fail_trusted_context_live_type(self):
+    def test_fail_deployment_binding_live_type(self):
         # live binding 形态未在 B2-B 定义：拒绝。
-        ctx = trusted_context()
+        ctx = deployment_binding()
         ctx["context_type"] = "live"
-        self.assertIn("instance.trusted_context_type", self.errors(ctx=ctx))
+        self.assertIn("instance.deployment_binding_type", self.errors(ctx=ctx))
 
-    def test_fail_trusted_context_bad_commit(self):
-        ctx = trusted_context()
+    def test_fail_deployment_binding_bad_commit(self):
+        ctx = deployment_binding()
         ctx["core_commit"] = "not-a-commit"
-        self.assertIn("instance.trusted_context_commit", self.errors(ctx=ctx))
+        self.assertIn("instance.deployment_binding_commit", self.errors(ctx=ctx))
 
-    def test_fail_trusted_context_missing_key(self):
-        ctx = trusted_context()
+    def test_fail_deployment_binding_missing_key(self):
+        ctx = deployment_binding()
         del ctx["epoch"]
-        self.assertIn("instance.trusted_context_missing", self.errors(ctx=ctx))
+        self.assertIn("instance.deployment_binding_missing", self.errors(ctx=ctx))
 
     # ===== Negative: Instance config 边界 =====
 

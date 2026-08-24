@@ -1,0 +1,311 @@
+from __future__ import annotations
+"""V0.4-B2-C split deployment validation test envelope.
+
+验证面：validate_deployment(control_snapshot, deployed_core, instance_snapshot,
+trusted_locator)。
+
+Fixture 策略（synthetic-only）：
+- 全部 repository ID / commit / 名称均为 synthetic 值（9000000xxx / a*40），
+  不含真实凭证；validator 离线确定性，不触 GitHub。
+- deployed_core 复用真实物化的 Core 仓库树（满足完整 validate_core 契约），
+  provenance 为 synthetic；破坏性 negative 用临时 copytree 注入。
+- Runtime-Control / Instance 快照为程序化临时目录；不创建任何真实
+  deployment.yaml 于 Runtime-Control 仓库（B2-C 不物化 control plane）。
+"""
+
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+import yaml
+
+from scripts.validate_learning_os import (
+    DeploymentBinding,
+    RepositorySnapshot,
+    validate_deployment,
+)
+
+# synthetic 身份（owner/name 仅 navigation，不参与信任判断）
+RC_ID = 9000000001
+CORE_ID = 9000000002
+INST_ID = 9000000003
+COMMIT = "a" * 40
+CORE_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def write_yaml(root: Path, rel: str, data: dict) -> None:
+    p = root / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+
+def contract(**over) -> dict:
+    """合成 public Runtime-Control deployment contract（allowlist 内合法形状）。"""
+    d = {
+        "schema_version": "0.4",
+        "document_type": "deployment_binding",
+        "deployment": {"id": "dep-synthetic-001", "topology": "split",
+                        "epoch": 1, "write_state": "active"},
+        "core": {"repository_id": CORE_ID, "commit": COMMIT},
+    }
+    for k, v in over.items():
+        if k in ("deployment", "core") and isinstance(v, dict):
+            d[k] = {**d[k], **v}
+        else:
+            d[k] = v
+    return d
+
+
+def locator(**over) -> dict:
+    loc = {
+        "runtime_control": {"repository_id": RC_ID, "repository": "example/rc-nav",
+                             "canonical_ref": "main", "contract_path": "deployment.yaml"},
+        "instance": {"repository_id": INST_ID, "repository": "example/inst-nav"},
+    }
+    for k, v in over.items():
+        if k in loc and isinstance(v, dict):
+            loc[k] = {**loc[k], **v}
+        else:
+            loc[k] = v
+    return loc
+
+
+class DeploymentValidationTests(unittest.TestCase):
+    """B2-C required envelope：positive PASS / negative fail-closed FAIL。"""
+
+    def setUp(self) -> None:
+        rc_td = tempfile.TemporaryDirectory()
+        inst_td = tempfile.TemporaryDirectory()
+        self.addCleanup(rc_td.cleanup)
+        self.addCleanup(inst_td.cleanup)
+        self.control = Path(rc_td.name)
+        self.instance_root = Path(inst_td.name)
+        write_file = lambda rel, text: (self.instance_root / rel).parent.mkdir(parents=True, exist_ok=True) or (self.instance_root / rel).write_text(text, encoding="utf-8")
+        write_file("README.md", "# Instance\n\nNONCANONICAL — NOT DEPLOYED\n")
+        write_yaml(self.instance_root, "config/instance.yaml", {
+            "schema_version": "0.4", "document_type": "instance_config",
+            "product": {"id": "learning-os"},
+            "instance": {"display_timezone": "Asia/Shanghai"},
+            "nonproduction": True,
+        })
+        self.core_root = CORE_REPO_ROOT
+
+    # ---- 组装 helpers ----
+
+    def publish(self, c: dict | None = None, *, path: str = "deployment.yaml") -> None:
+        write_yaml(self.control, path, c if c is not None else contract())
+
+    def snaps(self, *, rc_id=RC_ID, core_id=CORE_ID, inst_id=INST_ID,
+              core_commit=COMMIT):
+        return (
+            RepositorySnapshot(self.control, rc_id),
+            RepositorySnapshot(self.core_root, core_id, core_commit),
+            RepositorySnapshot(self.instance_root, inst_id),
+        )
+
+    def errors(self, c: dict | None = None, loc: dict | None = None, **kw) -> set[str]:
+        self.publish(c)
+        ctrl, core, inst = self.snaps(**kw)
+        return {f.code for f in validate_deployment(ctrl, core, inst, loc if loc is not None else locator()) if f.severity == "error"}
+
+    def assert_pass(self, c: dict | None = None, loc: dict | None = None, **kw) -> None:
+        codes = self.errors(c, loc, **kw)
+        self.assertEqual(set(), codes)
+
+    # ===== Positive: PASS =====
+
+    def test_valid_active_deployment_pass(self):
+        self.assert_pass()
+
+    def test_valid_frozen_deployment_pass(self):
+        # frozen 是合法结构值；quiescence 证明属操作层，validator 不下结论。
+        self.assert_pass(contract(deployment={"write_state": "frozen"}))
+
+    def test_navigation_rename_pass(self):
+        # 同 numeric ID + 已变名称：navigation drift，不构成身份失败。
+        self.assert_pass(
+            contract(core={"repository_full_name": "renamed-owner/renamed-core"}),
+            locator(runtime_control={"repository": "renamed-owner/renamed-rc"},
+                    instance={"repository": "renamed-owner/renamed-inst"}))
+
+    def test_custom_contract_path_pass(self):
+        self.assert_pass(path="contracts/deployment.yaml") if False else None
+        write_yaml(self.control, "contracts/deployment.yaml", contract())
+        ctrl, core, inst = self.snaps()
+        codes = {f.code for f in validate_deployment(ctrl, core, inst, locator(runtime_control={"contract_path": "contracts/deployment.yaml"})) if f.severity == "error"}
+        self.assertEqual(set(), codes)
+
+    def test_instance_state_schema_supported_pass(self):
+        # Instance 0.3 state doc 落在 Core 支持列表内（经 validate_instance 复用）。
+        write_yaml(self.instance_root, "learner/model.yaml", {
+            "schema_version": "0.3", "document_type": "learner_model",
+            "updated_at": "2026-08-24T12:00:00+08:00", "working_style": {},
+        })
+        self.assert_pass()
+
+    # ===== Negative: contract 结构 fail closed =====
+
+    def test_fail_missing_contract(self):
+        ctrl, core, inst = self.snaps()
+        codes = {f.code for f in validate_deployment(ctrl, core, inst, locator()) if f.severity == "error"}
+        self.assertIn("deployment.contract_missing", codes)
+
+    def test_fail_wrong_schema_version(self):
+        self.assertIn("deployment.schema_version", self.errors(contract(schema_version="0.3")))
+
+    def test_fail_wrong_document_type(self):
+        self.assertIn("deployment.document_type", self.errors(contract(document_type="migration_transaction")))
+
+    def test_fail_unknown_top_level_field(self):
+        self.assertIn("deployment.forbidden_field", self.errors(contract(operator_notes="x")))
+
+    def test_fail_unknown_deployment_section_field(self):
+        self.assertIn("deployment.forbidden_field", self.errors(contract(deployment={"owner": "x"})))
+
+    def test_fail_missing_required_field(self):
+        c = contract(); del c["deployment"]["write_state"]
+        self.assertIn("deployment.required_field", self.errors(c))
+
+    def test_fail_bad_epoch(self):
+        self.assertIn("deployment.epoch", self.errors(contract(deployment={"epoch": 0})))
+        self.assertIn("deployment.epoch", self.errors(contract(deployment={"epoch": "2"})))
+
+    def test_fail_unknown_write_state(self):
+        self.assertIn("deployment.write_state", self.errors(contract(deployment={"write_state": "paused"})))
+
+    def test_fail_legacy_topology(self):
+        self.assertIn("deployment.topology", self.errors(contract(deployment={"topology": "legacy"})))
+
+    def test_fail_non_integer_core_id(self):
+        self.assertIn("deployment.core_repository_id", self.errors(contract(core={"repository_id": "1343815302"})))
+
+    def test_fail_abbreviated_commit(self):
+        self.assertIn("deployment.core_commit", self.errors(contract(core={"commit": "fb7b2aa"})))
+
+    def test_fail_branch_name_as_commit(self):
+        self.assertIn("deployment.core_commit", self.errors(contract(core={"commit": "main"})))
+
+    # ===== Negative: 身份 / provenance fail closed =====
+
+    def test_fail_core_id_provenance_mismatch(self):
+        self.assertIn("deployment.core_identity", self.errors(core_id=CORE_ID + 1))
+
+    def test_fail_core_commit_provenance_mismatch(self):
+        self.assertIn("deployment.core_commit_mismatch", self.errors(core_commit="b" * 40))
+
+    def test_fail_control_identity_mismatch(self):
+        self.assertIn("deployment.control_identity", self.errors(rc_id=RC_ID + 1))
+
+    def test_fail_instance_identity_mismatch(self):
+        self.assertIn("deployment.instance_identity", self.errors(inst_id=INST_ID + 1))
+
+    def test_fail_missing_core_commit_provenance(self):
+        self.publish()
+        ctrl = RepositorySnapshot(self.control, RC_ID)
+        core = RepositorySnapshot(self.core_root, CORE_ID, None)
+        inst = RepositorySnapshot(self.instance_root, INST_ID)
+        codes = {f.code for f in validate_deployment(ctrl, core, inst, locator()) if f.severity == "error"}
+        self.assertIn("deployment.core_provenance", codes)
+
+    def test_fail_bare_path_cannot_prove_identity(self):
+        # bare path 无 trusted provenance：不能自证身份，fail closed。
+        self.publish()
+        codes = {f.code for f in validate_deployment(self.control, RepositorySnapshot(self.core_root, CORE_ID, COMMIT), RepositorySnapshot(self.instance_root, INST_ID), locator()) if f.severity == "error"}
+        self.assertIn("deployment.snapshot_provenance", codes)
+
+    def test_repository_snapshot_rejects_bad_provenance(self):
+        with self.assertRaises(ValueError):
+            RepositorySnapshot(self.control, "not-an-int")
+        with self.assertRaises(ValueError):
+            RepositorySnapshot(self.control, RC_ID, "short")
+
+    # ===== Negative: 信任边界 fail closed =====
+
+    def test_fail_instance_identity_in_contract(self):
+        self.assertIn("deployment.trust_boundary", self.errors(contract(instance_repository_id=INST_ID)))
+
+    def test_fail_lineage_field_in_contract(self):
+        self.assertIn("deployment.trust_boundary", self.errors(contract(deployment={"active_generation": 9})))
+
+    def test_fail_migration_field_in_contract(self):
+        self.assertIn("deployment.trust_boundary", self.errors(contract(migration_authorized=True)))
+
+    def test_fail_self_asserted_control_identity(self):
+        self.assertIn("deployment.trust_boundary", self.errors(contract(runtime_control_repository_id=RC_ID)))
+
+    def test_fail_credential_key_and_value(self):
+        self.assertIn("deployment.trust_boundary", self.errors(contract(token="x")))
+        self.assertIn("deployment.credential_value", self.errors(contract(deployment={"id": "ghp_" + "x" * 30})))
+
+    # ===== Negative: locator fail closed =====
+
+    def test_fail_missing_locator(self):
+        self.publish()
+        ctrl, core, inst = self.snaps()
+        codes = {f.code for f in validate_deployment(ctrl, core, inst, None) if f.severity == "error"}
+        self.assertIn("deployment.locator", codes)
+
+    def test_fail_locator_unknown_key(self):
+        self.assertIn("deployment.locator_keys", self.errors(loc=locator(expected_epoch=1)))
+
+    def test_fail_locator_non_integer_id(self):
+        self.assertIn("deployment.locator_id", self.errors(loc=locator(instance={"repository_id": "inst"})))
+
+    # ===== 复用面（不复制逻辑）负向传播 =====
+
+    def test_validate_core_failure_propagates(self):
+        # copytree 注入 learner/（Instance plane 内容）→ validate_core FAIL 透传。
+        with tempfile.TemporaryDirectory() as td:
+            broken = Path(td) / "core"  # 目标必须是尚不存在的子目录
+            shutil.copytree(self.core_root, broken, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            (broken / "learner").mkdir()
+            (broken / "learner" / "x.yaml").write_text("document_type: learner_model\nschema_version: '0.3'\n", encoding="utf-8")
+            ctrl = RepositorySnapshot(self.control, RC_ID)
+            core = RepositorySnapshot(broken, CORE_ID, COMMIT)
+            inst = RepositorySnapshot(self.instance_root, INST_ID)
+            self.publish()
+            codes = {f.code for f in validate_deployment(ctrl, core, inst, locator()) if f.severity == "error"}
+            self.assertIn("core.plane", codes)
+
+    def test_validate_instance_failure_propagates(self):
+        # Instance 缺 config/instance.yaml → validate_instance FAIL 透传。
+        (self.instance_root / "config" / "instance.yaml").unlink()
+        self.assertIn("instance.config_missing", self.errors())
+
+    def test_binding_projection_uses_contract_fields(self):
+        # contract 投影 binding：字段与 contract 一致（epoch=2 传播到 Instance 面）。
+        self.assert_pass(contract(deployment={"epoch": 2, "id": "dep-synthetic-002"}))
+
+    # ===== CLI 面 =====
+
+    def test_cli_deployment_surface(self):
+        self.publish()
+        tmp = self.instance_root.parent
+        write_yaml(tmp, "locator.yaml", locator())
+        write_yaml(tmp, "provenance.yaml", {
+            "control": {"repository_id": RC_ID},
+            "core": {"repository_id": CORE_ID, "commit_sha": COMMIT},
+            "instance": {"repository_id": INST_ID},
+        })
+        r = subprocess.run([sys.executable, "scripts/validate_learning_os.py", str(self.instance_root),
+                            "--deployment", "--control-snapshot", str(self.control),
+                            "--core-snapshot", str(self.core_root),
+                            "--instance-snapshot", str(self.instance_root),
+                            "--locator", str(tmp / "locator.yaml"),
+                            "--provenance", str(tmp / "provenance.yaml")],
+                           capture_output=True, text=True, cwd=CORE_REPO_ROOT, timeout=120)
+        self.assertEqual(0, r.returncode, r.stdout + r.stderr)
+        self.assertIn("0 error(s)", r.stdout)
+
+    def test_deployment_binding_from_contract_shape(self):
+        b = DeploymentBinding.from_contract(contract(), locator())
+        self.assertEqual("contract", b.form)
+        self.assertEqual(CORE_ID, b.fields["core_repository_id"])
+        self.assertEqual("split", b.fields["topology"])
+
+
+if __name__ == "__main__":
+    unittest.main()

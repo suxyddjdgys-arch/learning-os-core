@@ -317,21 +317,27 @@ class CoreValidator:
 def validate_core(core_snapshot):
     """V0.4 Core plane validation surface: validate_core(core_snapshot).
 
-    Accepts a materialized Core snapshot path. Deterministic and offline;
-    GitHub state is never consulted. Provides structural privacy/ownership
-    boundary enforcement, not complete secret detection.
+    Accepts a materialized Core snapshot path or RepositorySnapshot.
+    Deterministic and offline; GitHub state is never consulted. Provides
+    structural privacy/ownership boundary enforcement, not complete secret
+    detection.
     """
-    return CoreValidator(Path(core_snapshot)).run()
+    # 注意：pathlib.Path 自带 .root 属性（值为 "/"），必须用显式类型判断
+    # 而非 getattr 来识别 RepositorySnapshot，否则会把文件系统根当成快照。
+    return CoreValidator(Path(core_snapshot.root) if isinstance(core_snapshot,RepositorySnapshot) else Path(core_snapshot)).run()
 
-# ===== V0.4 Instance plane surface (authorized V0.4-B2-B) =====
-# validate_instance(instance_snapshot, deployed_core, trusted_context) is the
-# split-aware Instance validation surface. It is deterministic and offline:
-# GitHub state is never consulted. deployed_core is a locally materialized
-# Core snapshot (exact pinned commit checkout); trusted_context is explicit
-# trusted metadata standing in for the future deployment binding (B2-C
-# materializes the live binding). Live epoch enforcement, write_state routing,
-# GitHub ID resolution, bootstrap locator resolution and name->ID verification
-# are explicitly deferred to B2-C and are NOT implemented here.
+# ===== V0.4 Instance plane surface (authorized V0.4-B2-B; binding terminology
+# unified in V0.4-B2-C) =====
+# validate_instance(instance_snapshot, deployed_core, deployment_binding) is
+# the split-aware Instance validation surface. It is deterministic and
+# offline: GitHub state is never consulted. deployed_core is a locally
+# materialized Core snapshot (exact pinned commit checkout);
+# deployment_binding is explicit trusted metadata standing in for the
+# deployment binding (synthetic fixtures, or a projection of a validated
+# Runtime-Control deployment contract via validate_deployment). Live epoch
+# enforcement, write_state routing, GitHub ID resolution, bootstrap locator
+# resolution and name->ID verification remain runtime/resolver surfaces and
+# are NOT implemented here.
 
 INSTANCE_SCHEMA="0.4"
 INSTANCE_ALLOWED_TOP={"config","learner","topics","evidence","execution","runtime","curriculum"}
@@ -353,14 +359,61 @@ INSTANCE_FORBIDDEN_KEYS={"deployment_epoch","active_deployment","write_state","a
 INSTANCE_LINEAGE_KEYS={"active_generation","pending_handoff"}
 # Instance 内部物理引用只允许落在 Instance 自有 plane 内
 INSTANCE_REF_PREFIXES=("learner/","topics/","evidence/","execution/","curriculum/","runtime/ui/")
-TRUSTED_CONTEXT_KEYS={"context_type","core_repository_id","core_commit","instance_repository_id","topology","epoch","write_state"}
+# 唯一的 binding schema（B2-B 定义；B2-C 仅归一术语，不改键集）。
+# context_type 键仅属于 synthetic fixture 形态；contract 投影形态不带该键。
+DEPLOYMENT_BINDING_KEYS={"context_type","core_repository_id","core_commit","instance_repository_id","topology","epoch","write_state"}
+
+class RepositorySnapshot:
+    """Materialized repository tree + TRUSTED resolver-output provenance.
+
+    repository_id / commit_sha 只能来自调用方显式提供的 trusted resolver
+    output；validator 永不从被验证仓库内容读取自声明身份（self-declared
+    identity 不构成信任来源）。缺失/非法 trusted metadata 一律 fail closed
+    （构造即抛错，调用面转为 Finding）。
+    """
+    __slots__=("root","repository_id","commit_sha")
+    def __init__(self,root,repository_id,commit_sha=None):
+        self.root=Path(root).resolve()
+        if not isinstance(repository_id,int) or isinstance(repository_id,bool) or repository_id<=0:
+            raise ValueError("RepositorySnapshot.repository_id must be a positive integer (trusted provenance; fail closed)")
+        if commit_sha is not None and not (isinstance(commit_sha,str) and re.fullmatch(r"[0-9a-f]{40}",commit_sha)):
+            raise ValueError("RepositorySnapshot.commit_sha must be a full 40-hex commit or None (fail closed)")
+        self.repository_id=repository_id; self.commit_sha=commit_sha
+
+class DeploymentBinding:
+    """显式 trusted deployment binding（B2-C 归一 B2-B trusted_context 术语）。
+
+    form="synthetic"：B2-B 唯一定义的 fixture 形态（dict 或 YAML path，
+    完整 7 键 schema，context_type 必须为 synthetic）。
+    form="contract"：由已通过 DeploymentValidator 结构校验的 Runtime-Control
+    deployment contract + trusted locator 投影而来；不引入第二 schema，
+    不复制 deployment authority（contract 校验唯一归 DeploymentValidator）。
+    字段格式的最终校验统一在 InstanceValidator.load_binding（单一权威点）。
+    """
+    __slots__=("form","fields","source")
+    def __init__(self,source):
+        # source: dict | YAML path（synthetic 形态）
+        self.form="synthetic"; self.source=source; self.fields=None
+    @classmethod
+    def from_contract(cls,contract,locator):
+        b=cls.__new__(cls)
+        b.form="contract"; b.source=None
+        b.fields={
+            "core_repository_id":contract["core"]["repository_id"],
+            "core_commit":contract["core"]["commit"],
+            "instance_repository_id":locator["instance"]["repository_id"],
+            "topology":contract["deployment"]["topology"],
+            "epoch":contract["deployment"]["epoch"],
+            "write_state":contract["deployment"]["write_state"],
+        }
+        return b
 
 class InstanceValidator:
     """Deterministic validate_instance(instance_snapshot, deployed_core,
-    trusted_context) surface for the V0.4 Instance plane."""
-    def __init__(self,root:Path,core_root,trusted_context):
+    deployment_binding) surface for the V0.4 Instance plane."""
+    def __init__(self,root:Path,core_root,deployment_binding):
         self.root=root.resolve(); self.core_root=Path(core_root).resolve() if core_root is not None else None
-        self.trusted_context=trusted_context
+        self.deployment_binding=deployment_binding
         self.findings=[]; self.docs={}; self.evidence=set(); self.curricula={}
         self.core_bases={}; self.extensions={}; self.supported_state_schemas=None; self.core_product=None
     def error(self,c,p,m): self.findings.append(Finding("error",c,p,m))
@@ -368,7 +421,7 @@ class InstanceValidator:
         if v not in a: self.error("enum.invalid",p,f"{f}={v!r} not in {sorted(a)}")
     def run(self):
         if not self.root.is_dir(): self.error("instance.snapshot",".","instance snapshot root is not a directory"); return self.findings
-        self.scan_top(); self.collect(); self.load_trusted_context(); self.load_core()
+        self.scan_top(); self.collect(); self.load_binding(); self.load_core()
         self.check_documents(); self.build_curricula(); self.check_instance_config()
         self.structural(); self.refs(); self.sequence(); self.authority(); self.weekly(); self.provenance()
         return self.findings
@@ -407,33 +460,48 @@ class InstanceValidator:
             if d.get("document_type")=="evidence" and isinstance(d.get("id"),str):
                 if d["id"] in self.evidence:self.error("evidence.duplicate_id",p,d["id"])
                 self.evidence.add(d["id"])
-    def load_trusted_context(self):
-        # 显式 trusted deployment context：B2-B 仅定义 synthetic 形态；
-        # 未知键一律拒绝（fail closed），B2-C 扩展时须显式更新本契约。
-        ctx=self.trusted_context; d=None
-        if ctx is None: self.error("instance.trusted_context","<trusted-context>","trusted deployment context is required (fail closed)"); return
-        if isinstance(ctx,dict): d=ctx
+    def load_binding(self):
+        # 显式 trusted deployment binding：synthetic 形态（唯一 fixture
+        # schema，未知键一律拒绝）或 contract 投影形态（键集由
+        # DeploymentValidator 校验，此处仅复核字段格式）。fail closed。
+        b=self.deployment_binding
+        if b is None: self.error("instance.deployment_binding","<deployment-binding>","trusted deployment binding is required (fail closed)"); return
+        if isinstance(b,DeploymentBinding):
+            if b.form=="contract" and isinstance(b.fields,dict): d=b.fields; skip_synthetic_keys=True
+            elif b.form=="synthetic":
+                src=b.source; d=None; skip_synthetic_keys=False
+                if isinstance(src,dict): d=src
+                else:
+                    p=Path(src)
+                    if not p.is_file(): self.error("instance.deployment_binding",str(src),"deployment binding file is missing (fail closed)"); return
+                    try:d=yaml.safe_load(p.read_text(encoding="utf-8"))
+                    except Exception as e:self.error("instance.deployment_binding",str(src),str(e)); return
+            else: self.error("instance.deployment_binding","<deployment-binding>","unsupported binding form"); return
         else:
-            p=Path(ctx)
-            if not p.is_file(): self.error("instance.trusted_context",str(ctx),"trusted context file is missing (fail closed)"); return
-            try:d=yaml.safe_load(p.read_text(encoding="utf-8"))
-            except Exception as e:self.error("instance.trusted_context",str(ctx),str(e)); return
-        if not isinstance(d,dict): self.error("instance.trusted_context","<trusted-context>","trusted context must be a mapping"); return
-        unknown=sorted(set(d)-TRUSTED_CONTEXT_KEYS)
-        if unknown: self.error("instance.trusted_context_keys","<trusted-context>",f"unknown trusted context keys {unknown}; B2-C must extend this contract explicitly")
-        for k in sorted(TRUSTED_CONTEXT_KEYS):
-            if k not in d: self.error("instance.trusted_context_missing",f"<trusted-context>:{k}","missing required trusted context key")
-        if d.get("context_type")!="synthetic": self.error("instance.trusted_context_type","<trusted-context>:context_type","only synthetic trusted contexts are defined in B2-B; live deployment bindings are B2-C")
+            # 兼容直接传 dict / YAML path 的调用方式（视作 synthetic 形态）
+            d=b; skip_synthetic_keys=False
+            if not isinstance(d,dict):
+                p=Path(d)
+                if not p.is_file(): self.error("instance.deployment_binding",str(d),"deployment binding file is missing (fail closed)"); return
+                try:d=yaml.safe_load(p.read_text(encoding="utf-8"))
+                except Exception as e:self.error("instance.deployment_binding",str(d),str(e)); return
+        if not isinstance(d,dict): self.error("instance.deployment_binding","<deployment-binding>","deployment binding must be a mapping"); return
+        if not skip_synthetic_keys:
+            unknown=sorted(set(d)-DEPLOYMENT_BINDING_KEYS)
+            if unknown: self.error("instance.deployment_binding_keys","<deployment-binding>",f"unknown deployment binding keys {unknown}; the binding schema must be extended explicitly")
+            for k in sorted(DEPLOYMENT_BINDING_KEYS):
+                if k not in d: self.error("instance.deployment_binding_missing",f"<deployment-binding>:{k}","missing required deployment binding key")
+            if d.get("context_type")!="synthetic": self.error("instance.deployment_binding_type","<deployment-binding>:context_type","only synthetic deployment bindings are valid fixtures; live bindings are projections of a validated deployment contract (validate_deployment)")
         for k in ("core_repository_id","instance_repository_id"):
             v=d.get(k)
-            if not isinstance(v,int) or isinstance(v,bool) or v<=0: self.error("instance.trusted_context_id",f"<trusted-context>:{k}","must be a positive integer repository ID")
+            if not isinstance(v,int) or isinstance(v,bool) or v<=0: self.error("instance.deployment_binding_id",f"<deployment-binding>:{k}","must be a positive integer repository ID")
         cc=d.get("core_commit")
-        if not (isinstance(cc,str) and re.fullmatch(r"[0-9a-f]{40}",cc)): self.error("instance.trusted_context_commit","<trusted-context>:core_commit","must be a 40-hex core commit")
+        if not (isinstance(cc,str) and re.fullmatch(r"[0-9a-f]{40}",cc)): self.error("instance.deployment_binding_commit","<deployment-binding>:core_commit","must be a 40-hex core commit")
         for k in ("topology","write_state"):
             v=d.get(k)
-            if not isinstance(v,str) or not v.strip(): self.error("instance.trusted_context_field",f"<trusted-context>:{k}","must be a non-empty string")
+            if not isinstance(v,str) or not v.strip(): self.error("instance.deployment_binding_field",f"<deployment-binding>:{k}","must be a non-empty string")
         ep=d.get("epoch")
-        if not isinstance(ep,int) or isinstance(ep,bool) or ep<1: self.error("instance.trusted_context_epoch","<trusted-context>:epoch","must be a positive integer")
+        if not isinstance(ep,int) or isinstance(ep,bool) or ep<1: self.error("instance.deployment_binding_epoch","<deployment-binding>:epoch","must be a positive integer")
     def load_core(self):
         # deployed_core 是本地物化的 Core 快照（trusted context pin 的 exact commit 检出）。
         # 仅从快照读取 manifest 与 domain bases；不做 GitHub 在线发现。
@@ -708,34 +776,270 @@ class InstanceValidator:
                         elif dom not in self.extensions or ext_r>self.extensions[dom].get("extension_revision",-1): self.error("instance.provenance_extension",where,f"references extension revision that does not exist for domain {dom!r}")
                 else: self.error("instance.provenance_form",where,"entry carries neither curriculum_version nor base_version/extension_revision")
 
-def validate_instance(instance_snapshot, deployed_core, trusted_context):
+def validate_instance(instance_snapshot, deployed_core, deployment_binding):
     """V0.4 Instance plane validation surface:
-    validate_instance(instance_snapshot, deployed_core, trusted_context).
+    validate_instance(instance_snapshot, deployed_core, deployment_binding).
 
-    instance_snapshot: materialized Instance tree path.
+    instance_snapshot: materialized Instance tree path (or RepositorySnapshot).
     deployed_core: locally materialized Core snapshot path (exact pinned
-        commit checkout). Never "latest Core main"; GitHub is not consulted.
-    trusted_context: explicit trusted deployment context (dict or YAML file
-        path). In B2-B this is a synthetic stand-in for the future deployment
-        binding; live binding semantics (epoch enforcement, write_state
-        routing, ID resolution) are deferred to B2-C.
+        commit checkout) or RepositorySnapshot. Never "latest Core main";
+        GitHub is not consulted.
+    deployment_binding: explicit trusted deployment binding — a DeploymentBinding,
+        dict, or YAML file path. Synthetic fixtures carry the single binding
+        schema (context_type: synthetic); live bindings are projections of a
+        validated deployment contract (see validate_deployment). Live epoch
+        enforcement, write_state routing, ID resolution remain runtime/resolver
+        surfaces and are not implemented here.
 
     Deterministic and offline. Fail-closed privacy/ownership boundary
     enforcement for the Instance plane, not complete secret detection.
     """
-    return InstanceValidator(Path(instance_snapshot), deployed_core, trusted_context).run()
+    # 显式类型判断（Path.root 是 "/"，不能用 getattr 识别 RepositorySnapshot）
+    iroot=instance_snapshot.root if isinstance(instance_snapshot,RepositorySnapshot) else instance_snapshot
+    croot=deployed_core.root if isinstance(deployed_core,RepositorySnapshot) else deployed_core
+    return InstanceValidator(Path(iroot),croot,deployment_binding).run()
+
+# ===== V0.4 Deployment plane surface (authorized V0.4-B2-C) =====
+# validate_deployment(control_snapshot, deployed_core, instance_snapshot,
+# trusted_locator) is the split deployment validation surface. Deterministic
+# and offline: it never resolves repositories, never contacts GitHub, never
+# fetches live deployment state and never checks platform permissions
+# (no resolve_repository / lookup_github / fetch_live_deployment /
+# check_platform_permissions — those belong to a future resolver/runtime
+# surface). Snapshot provenance is CALLER-SUPPLIED trusted resolver output;
+# self-declared identity inside any repository content is never trusted.
+
+DEPLOYMENT_SCHEMA="0.4"
+DEPLOYMENT_DOC_TYPE="deployment_binding"
+# public Runtime-Control deployment contract allowlist（fail closed：allowlist
+# 外任何键都拒绝；Instance identity / lineage / migration / credentials
+# 属于被禁的信任边界内容，见 DEPLOYMENT_TRUST_BOUNDARY_KEYS）
+DEPLOYMENT_TOP_KEYS={"schema_version","document_type","updated_at","deployment","core"}
+DEPLOYMENT_SECTION_KEYS={"deployment":{"id","topology","epoch","write_state"},"core":{"repository_id","commit","repository_full_name"}}
+DEPLOYMENT_REQUIRED={"deployment":{"id","topology","epoch","write_state"},"core":{"repository_id","commit"}}
+DEPLOYMENT_TOPOLOGIES={"split"}
+DEPLOYMENT_WRITE_STATES={"active","frozen"}
+DEPLOYMENT_TRUST_BOUNDARY_KEYS={
+    "instance_repository_id":"Instance identity must come from the trusted locator, never the public contract",
+    "instance_repository_full_name":"Instance identity must come from the trusted locator, never the public contract",
+    "instance_canonical_ref":"Instance identity must come from the trusted locator, never the public contract",
+    "instance":"Instance identity block is forbidden in the public Runtime-Control contract",
+    "runtime_control_repository_id":"a repository must not self-assert its own trusted identity",
+    "active_generation":"lineage authority does not belong in a deployment contract",
+    "pending_handoff":"lineage authority does not belong in a deployment contract",
+    "handoff_id":"lineage authority does not belong in a deployment contract",
+    "lineage_control":"lineage authority does not belong in a deployment contract",
+    "migration_transaction":"migration transaction state belongs to private Control, never the public contract",
+    "migration_authorized":"migration authorization belongs to private Control, never the public contract",
+    "migration_authorization":"migration authorization belongs to private Control, never the public contract",
+    "migration_state":"migration transaction state belongs to private Control, never the public contract",
+    "secret":"credentials are forbidden in the public contract","secrets":"credentials are forbidden in the public contract",
+    "token":"credentials are forbidden in the public contract","tokens":"credentials are forbidden in the public contract",
+    "password":"credentials are forbidden in the public contract","api_key":"credentials are forbidden in the public contract",
+    "api_token":"credentials are forbidden in the public contract","private_key":"credentials are forbidden in the public contract",
+    "credential":"credentials are forbidden in the public contract","credentials":"credentials are forbidden in the public contract",
+}
+# 外部 trusted locator 契约（TRUST ROOT；navigation 字段不参与信任判断）
+LOCATOR_TOP_KEYS={"runtime_control","instance"}
+LOCATOR_RC_KEYS={"repository_id","repository","canonical_ref","contract_path"}
+LOCATOR_INSTANCE_KEYS={"repository_id","repository"}
+
+class DeploymentValidator:
+    """Deterministic validate_deployment(control_snapshot, deployed_core,
+    instance_snapshot, trusted_locator) surface for the V0.4 split planes.
+
+    复用 validate_core() 与 validate_instance()（经 InstanceValidator），
+    不复制其逻辑；本面只新增 deployment contract 结构/身份/信任边界检查。
+    """
+    def __init__(self,control,core,instance,locator):
+        self.control=control; self.core=core; self.instance=instance; self.locator_source=locator
+        self.findings=[]
+    def error(self,c,p,m): self.findings.append(Finding("error",c,p,m))
+    def run(self):
+        self.resolve_snapshots(); self.load_locator(); self.load_contract()
+        if self.contract is None: return self.findings
+        self.check_contract_structure(); self.check_trust_boundary()
+        self.check_identity(); self.reuse_sub_surfaces()
+        return self.findings
+    # --- snapshots：必须是携带 trusted provenance 的 RepositorySnapshot ---
+    def resolve_snapshots(self):
+        self.control_snap=self.core_snap=self.instance_snap=None
+        for label,v in (("control",self.control),("core",self.core),("instance",self.instance)):
+            if v is None: self.error("deployment.snapshot_missing",f"<{label}-snapshot>",f"{label} snapshot with caller-supplied trusted provenance is required (fail closed)"); continue
+            if not isinstance(v,RepositorySnapshot):
+                self.error("deployment.snapshot_provenance",f"<{label}-snapshot>",f"{label} snapshot must be a RepositorySnapshot with explicit trusted provenance (root/repository_id[/commit_sha]); bare paths cannot prove identity"); continue
+            if not v.root.is_dir(): self.error("deployment.snapshot_root",f"<{label}-snapshot>",f"{label} snapshot root {v.root} is not a directory")
+        self.control_snap=self.control if isinstance(self.control,RepositorySnapshot) else None
+        self.core_snap=self.core if isinstance(self.core,RepositorySnapshot) else None
+        self.instance_snap=self.instance if isinstance(self.instance,RepositorySnapshot) else None
+        if self.core_snap is not None and self.core_snap.commit_sha is None:
+            self.error("deployment.core_provenance","<core-snapshot>","deployed Core snapshot provenance requires the exact pinned commit_sha (fail closed)")
+    # --- trusted locator：唯一的外部信任根 ---
+    def load_locator(self):
+        self.locator=None
+        src=self.locator_source
+        if src is None: self.error("deployment.locator","<trusted-locator>","trusted locator is required (fail closed)"); return
+        if isinstance(src,dict): d=src
+        else:
+            p=Path(src)
+            if not p.is_file(): self.error("deployment.locator",str(src),"trusted locator file is missing (fail closed)"); return
+            try:d=yaml.safe_load(p.read_text(encoding="utf-8"))
+            except Exception as e:self.error("deployment.locator",str(src),str(e)); return
+        if not isinstance(d,dict): self.error("deployment.locator","<trusted-locator>","trusted locator must be a mapping"); return
+        unknown=sorted(set(d)-LOCATOR_TOP_KEYS)
+        if unknown: self.error("deployment.locator_keys","<trusted-locator>",f"unknown locator keys {unknown}")
+        rc=d.get("runtime_control"); inst=d.get("instance")
+        if not isinstance(rc,dict): self.error("deployment.locator_runtime_control","<trusted-locator>:runtime_control","runtime_control block with repository_id is required"); rc={}
+        if not isinstance(inst,dict): self.error("deployment.locator_instance","<trusted-locator>:instance","instance block with repository_id is required"); inst={}
+        for blk,allowed,where in ((rc,LOCATOR_RC_KEYS,"runtime_control"),(inst,LOCATOR_INSTANCE_KEYS,"instance")):
+            u=sorted(set(blk)-allowed)
+            if u: self.error("deployment.locator_keys",f"<trusted-locator>:{where}",f"unknown keys {u}")
+            v=blk.get("repository_id")
+            if not isinstance(v,int) or isinstance(v,bool) or v<=0: self.error("deployment.locator_id",f"<trusted-locator>:{where}.repository_id","must be a positive integer repository ID (security identity)")
+            for nk in ("repository","canonical_ref","contract_path"):
+                if nk in blk and not (isinstance(blk[nk],str) and blk[nk].strip()):
+                    self.error("deployment.locator_field",f"<trusted-locator>:{where}.{nk}","must be a non-empty string (navigation only)")
+        if "contract_path" not in rc: rc=dict(rc,contract_path="deployment.yaml")
+        if "canonical_ref" not in rc: rc=dict(rc,canonical_ref="main")
+        self.locator={"runtime_control":rc,"instance":inst}
+    # --- deployment contract：结构化 allowlist + fail closed ---
+    def load_contract(self):
+        self.contract=None; self.contract_path=None
+        if self.locator is None or not isinstance(self.locator.get("runtime_control"),dict): return
+        if self.control_snap is None: return
+        cp=self.locator["runtime_control"].get("contract_path") or "deployment.yaml"
+        p=self.control_snap.root/cp
+        self.contract_path=p
+        if not p.is_file(): self.error("deployment.contract_missing",p.as_posix(),"deployment contract is missing at the locator contract_path (fail closed)"); return
+        try:d=yaml.safe_load(p.read_text(encoding="utf-8"))
+        except Exception as e:self.error("yaml.parse",p.as_posix(),str(e)); return
+        if not isinstance(d,dict): self.error("yaml.mapping",p.as_posix(),"deployment contract must be a mapping"); return
+        self.contract=d
+    def check_contract_structure(self):
+        p=self.contract_path.as_posix(); d=self.contract
+        if d.get("schema_version")!=DEPLOYMENT_SCHEMA: self.error("deployment.schema_version",p,f"deployment contract schema_version must be {DEPLOYMENT_SCHEMA!r}")
+        if d.get("document_type")!=DEPLOYMENT_DOC_TYPE: self.error("deployment.document_type",p,f"deployment contract document_type must be {DEPLOYMENT_DOC_TYPE!r}")
+        unknown=sorted(set(d)-DEPLOYMENT_TOP_KEYS)
+        if unknown: self.error("deployment.forbidden_field",p,f"unknown top-level contract fields {unknown}; the public contract is allowlist-only")
+        dep=d.get("deployment") or {}; core=d.get("core") or {}
+        if not isinstance(dep,dict): self.error("deployment.section",p,"deployment section must be a mapping"); dep={}
+        if not isinstance(core,dict): self.error("deployment.section",p,"core section must be a mapping"); core={}
+        for sec,obj in (("deployment",dep),("core",core)):
+            u=sorted(set(obj)-DEPLOYMENT_SECTION_KEYS[sec])
+            if u: self.error("deployment.forbidden_field",f"{p}:{sec}",f"unknown {sec} fields {u}; the public contract is allowlist-only")
+            for k in DEPLOYMENT_REQUIRED[sec]:
+                if k not in obj: self.error("deployment.required_field",f"{p}:{sec}.{k}",f"missing required field {sec}.{k}")
+        i=dep.get("id")
+        if not (isinstance(i,str) and i.strip()): self.error("deployment.id",f"{p}:deployment.id","must be a non-empty string")
+        if dep.get("topology") not in DEPLOYMENT_TOPOLOGIES: self.error("deployment.topology",f"{p}:deployment.topology",f"must be one of {sorted(DEPLOYMENT_TOPOLOGIES)}")
+        ep=dep.get("epoch")
+        if not isinstance(ep,int) or isinstance(ep,bool) or ep<1: self.error("deployment.epoch",f"{p}:deployment.epoch","must be a positive integer (monotonic fencing token)")
+        if dep.get("write_state") not in DEPLOYMENT_WRITE_STATES: self.error("deployment.write_state",f"{p}:deployment.write_state",f"must be one of {sorted(DEPLOYMENT_WRITE_STATES)}")
+        rid=core.get("repository_id")
+        if not isinstance(rid,int) or isinstance(rid,bool) or rid<=0: self.error("deployment.core_repository_id",f"{p}:core.repository_id","must be a positive integer repository ID (security identity; owner/name is navigation only)")
+        cc=core.get("commit")
+        if not (isinstance(cc,str) and re.fullmatch(r"[0-9a-f]{40}",cc)):
+            self.error("deployment.core_commit",f"{p}:core.commit","must be the exact 40-hex deployed commit; abbreviated SHA and branch/tag/ref names are not valid pins")
+        fn=core.get("repository_full_name")
+        if fn is not None and not (isinstance(fn,str) and fn.strip()): self.error("deployment.core_navigation",f"{p}:core.repository_full_name","optional navigation metadata must be a non-empty string")
+    def check_trust_boundary(self):
+        # 公开 contract 的信任边界：递归扫描禁键 + 结构化 token 值检测
+        p=self.contract_path.as_posix()
+        def walk(x,path):
+            if isinstance(x,dict):
+                for k,v in x.items():
+                    kp=f"{path}.{k}" if path else str(k)
+                    if k in DEPLOYMENT_TRUST_BOUNDARY_KEYS: self.error("deployment.trust_boundary",f"{p}:{kp}",DEPLOYMENT_TRUST_BOUNDARY_KEYS[k])
+                    walk(v,kp)
+            elif isinstance(x,list):
+                for i,v in enumerate(x): walk(v,f"{path}[{i}]")
+            elif isinstance(x,str) and CORE_TOKEN_RE.search(x):
+                self.error("deployment.credential_value",f"{p}:{path}","structurally detected credential/token value")
+        walk(self.contract,"")
+        if CORE_TOKEN_RE.search(self.contract_path.read_text(encoding="utf-8")):
+            self.error("deployment.credential_value",p,"structurally detected credential/token value in contract text")
+    def check_identity(self):
+        # 身份相等性：locator（TRUST ROOT）与 snapshot provenance（trusted
+        # resolver output）双向核对；owner/name 永不参与判断。
+        p=self.contract_path.as_posix(); d=self.contract
+        if self.control_snap is not None and self.locator is not None:
+            exp=self.locator["runtime_control"].get("repository_id")
+            if isinstance(exp,int) and self.control_snap.repository_id!=exp:
+                self.error("deployment.control_identity","<control-snapshot>",f"resolved Runtime-Control repository ID {self.control_snap.repository_id} != trusted locator expected {exp} (trust failure)")
+        core=d.get("core") or {}
+        if self.core_snap is not None:
+            if isinstance(core.get("repository_id"),int):
+                if self.core_snap.repository_id!=core["repository_id"]:
+                    self.error("deployment.core_identity","<core-snapshot>",f"contract core.repository_id {core['repository_id']} != trusted snapshot provenance {self.core_snap.repository_id}")
+            if isinstance(core.get("commit"),str) and self.core_snap.commit_sha is not None and self.core_snap.commit_sha!=core["commit"]:
+                self.error("deployment.core_commit_mismatch","<core-snapshot>",f"contract core.commit {core['commit']} != trusted snapshot provenance {self.core_snap.commit_sha} (deployment must pin the exact deployed commit)")
+        if self.instance_snap is not None and self.locator is not None:
+            exp=self.locator["instance"].get("repository_id")
+            if isinstance(exp,int) and self.instance_snap.repository_id!=exp:
+                self.error("deployment.instance_identity","<instance-snapshot>",f"resolved Instance repository ID {self.instance_snap.repository_id} != trusted locator expected {exp} (trust failure)")
+    def reuse_sub_surfaces(self):
+        # 复用（不复制）：validate_core 管 Core 契约，InstanceValidator 管
+        # Instance 契约；binding 由已校验 contract + locator 投影。
+        if self.core_snap is not None:
+            self.findings.extend(validate_core(self.core_snap.root))
+        if self.instance_snap is not None and self.core_snap is not None and self.locator is not None:
+            try:
+                binding=DeploymentBinding.from_contract(self.contract,self.locator)
+                self.findings.extend(InstanceValidator(self.instance_snap.root,self.core_snap.root,binding).run())
+            except (KeyError,TypeError,AttributeError):
+                self.error("deployment.binding_projection",self.contract_path.as_posix(),"deployment contract is too malformed to project a deployment binding")
+
+def validate_deployment(control_snapshot, deployed_core, instance_snapshot, trusted_locator):
+    """V0.4 split deployment validation surface:
+    validate_deployment(control_snapshot, deployed_core, instance_snapshot,
+    trusted_locator).
+
+    control_snapshot / deployed_core / instance_snapshot: RepositorySnapshot
+        objects — materialized trees plus CALLER-SUPPLIED trusted provenance
+        (repository_id, and for the deployed Core the exact pinned 40-hex
+        commit_sha). Self-declared identity inside repository content is
+        never trusted; missing provenance fails closed.
+    trusted_locator: the external trust root (dict or YAML file path) with
+        runtime_control.repository_id (+ optional canonical_ref/contract_path
+        and navigation names) and instance.repository_id. Navigation names
+        never participate in trust decisions.
+
+    Reuses validate_core() and validate_instance() instead of duplicating
+    them. Explicit non-goals: no resolve_repository(), no lookup_github(),
+    no fetch_live_deployment(), no check_platform_permissions() — those are
+    future resolver/runtime surfaces. Deterministic and offline; structural
+    privacy/ownership boundary enforcement, not complete secret detection.
+    """
+    return DeploymentValidator(control_snapshot,deployed_core,instance_snapshot,trusted_locator).run()
 
 def main():
     a=argparse.ArgumentParser(description="Learning OS deterministic validator")
     a.add_argument("root",nargs="?",default=".")
     a.add_argument("--core",action="store_true",help="validate a materialized V0.4 Core plane snapshot (validate_core surface)")
     a.add_argument("--instance",action="store_true",help="validate a materialized V0.4 Instance plane snapshot (validate_instance surface)")
-    a.add_argument("--core-snapshot",default=None,help="materialized Core snapshot required by --instance")
-    a.add_argument("--trusted-context",default=None,help="YAML file with the explicit trusted deployment context required by --instance")
+    a.add_argument("--deployment",action="store_true",help="validate a V0.4 split deployment (validate_deployment surface; synthetic offline snapshots)")
+    a.add_argument("--core-snapshot",default=None,help="materialized Core snapshot required by --instance/--deployment")
+    a.add_argument("--deployment-binding",default=None,help="YAML file with the explicit trusted deployment binding required by --instance (synthetic fixture form)")
+    a.add_argument("--control-snapshot",default=None,help="materialized Runtime-Control snapshot root required by --deployment")
+    a.add_argument("--instance-snapshot",default=None,help="materialized Instance snapshot root required by --deployment")
+    a.add_argument("--locator",default=None,help="YAML file with the trusted locator (external trust root) required by --deployment")
+    a.add_argument("--provenance",default=None,help="YAML file with caller-supplied trusted snapshot provenance (control/core/instance repository_id[/commit_sha]) required by --deployment")
     args=a.parse_args(); root=Path(args.root)
-    if args.instance:
-        if not args.core_snapshot or not args.trusted_context: a.error("--instance requires --core-snapshot and --trusted-context")
-        findings=validate_instance(root,args.core_snapshot,args.trusted_context); label="Instance snapshot"
+    if args.deployment:
+        need={"--control-snapshot":args.control_snapshot,"--core-snapshot":args.core_snapshot,"--instance-snapshot":args.instance_snapshot,"--locator":args.locator,"--provenance":args.provenance}
+        missing=[k for k,v in need.items() if not v]
+        if missing: a.error(f"--deployment requires {' '.join(missing)}")
+        prov=yaml.safe_load(Path(args.provenance).read_text(encoding="utf-8"))
+        snaps={}
+        for sec,root_key in (("control",args.control_snapshot),("core",args.core_snapshot),("instance",args.instance_snapshot)):
+            blk=(prov or {}).get(sec) or {}
+            try:
+                snaps[sec]=RepositorySnapshot(root_key,blk.get("repository_id"),blk.get("commit_sha"))
+            except ValueError as e: a.error(f"invalid provenance for {sec}: {e}")
+        findings=validate_deployment(snaps.get("control"),snaps.get("core"),snaps.get("instance"),args.locator); label="Deployment (offline snapshots)"
+    elif args.instance:
+        if not args.core_snapshot or not args.deployment_binding: a.error("--instance requires --core-snapshot and --deployment-binding")
+        findings=validate_instance(root,args.core_snapshot,args.deployment_binding); label="Instance snapshot"
     elif args.core:
         findings=validate_core(root); label="Core snapshot"
     else:

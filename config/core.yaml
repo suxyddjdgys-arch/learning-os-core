@@ -220,6 +220,9 @@ bootstrap:
 # Protocol routing (copy-by-value from legacy V0.3).
 protocol:
   runtime_core: protocol/runtime-core.md
+  # V0.4-B2-C deployment bootstrap trust model（授权的必要伴随修改：新
+  # protocol 文档必须被本清单路由，否则 validate_core fail closed）。
+  runtime_bootstrap: protocol/runtime-bootstrap.md
   new_topic_start: protocol/new-topic-start.md
   conversation_naming: protocol/conversation-naming-policy.md
   evidence_classification: protocol/evidence-classification.md

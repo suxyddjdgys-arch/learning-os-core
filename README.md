@@ -14,25 +14,46 @@ topology LEGACY
 
 The Core plane owns reusable product semantics only: the Core contract
 (`config/core.yaml`, schema 0.4), protocol documents, the deterministic
-validator (`validate_core`), synthetic tests, and stable reusable domain
-templates. It contains no learner state, no Evidence, no Instance or
-deployment authority, and no credentials. All test fixtures are synthetic.
+validator, synthetic tests, and stable reusable domain templates. It contains
+no learner state, no Evidence, no Instance or deployment authority, and no
+credentials. All test fixtures are synthetic.
 
 Validation (offline, deterministic):
 
     python scripts/validate_learning_os.py . --core
     python -m unittest discover -s tests -v
 
-The V0.4-B2-B split-aware Instance surface validates a materialized
-Instance snapshot against a locally materialized Core snapshot plus an
-explicit synthetic trusted deployment context (live deployment binding
-semantics are deferred to V0.4-B2-C and are not implemented here):
+The V0.4-B2-B split-aware Instance surface validates a materialized Instance
+snapshot against a locally materialized Core snapshot plus an explicit
+synthetic trusted deployment binding:
 
     python scripts/validate_learning_os.py <instance> --instance \
-        --core-snapshot <core> --trusted-context <ctx.yaml>
+        --core-snapshot <core> --deployment-binding <binding.yaml>
 
-All Instance test fixtures are synthetic programmatic temporaries; no real
-learner state, real Evidence, or credentials are ever materialized.
+The V0.4-B2-C deployment surface validates an offline split deployment. Each
+snapshot is a `RepositorySnapshot`: a materialized tree plus caller-supplied
+trusted provenance (`repository_id`, and for the deployed Core the exact
+pinned 40-hex `commit_sha`). Identity is never read from repository content;
+missing or mismatched trusted metadata fails closed:
+
+    python scripts/validate_learning_os.py . --deployment \
+        --control-snapshot <control> \
+        --core-snapshot <core> \
+        --instance-snapshot <instance> \
+        --locator <locator.yaml> \
+        --provenance <provenance.yaml>
+
+`validate_deployment` reuses `validate_core()` and `validate_instance()`
+instead of duplicating them, enforces the allowlist-only Runtime-Control
+deployment contract, and rejects Instance identity, lineage, migration
+transaction, or credential content in the public contract. See
+`protocol/runtime-bootstrap.md` for the trust model and explicit non-goals
+(no repository resolution, no GitHub lookup, no live fetch, no platform
+permission checks).
+
+All Instance and deployment test fixtures are synthetic programmatic
+temporaries; no real learner state, real Evidence, or credentials are ever
+materialized.
 
 Core mutation follows PR-required governance. This repository is not part
 of any Runtime installation and is not read by any deployed runtime.

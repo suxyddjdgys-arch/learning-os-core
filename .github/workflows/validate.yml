@@ -14,15 +14,15 @@ jobs:
         run: python -m pip install -r requirements-dev.txt
       - name: Validate Core plane snapshot (validate_core)
         run: python scripts/validate_learning_os.py . --core
-      - name: Run deterministic Core/Instance tests (synthetic fixtures, ownership/privacy negative tests)
+      - name: Run deterministic Core/Instance/Deployment tests (synthetic fixtures, fail-closed negative tests)
         run: python -m unittest discover -s tests -v
       - name: Validate synthetic candidate Instance snapshot (validate_instance CLI surface)
         run: |
           tmp="$(mktemp -d)"
           mkdir -p "$tmp/instance/config"
           python - "$tmp" <<'PY'
-          # 构造 synthetic candidate Instance 快照与 trusted context（全部
-          # synthetic 数据；不触 GitHub、不含真实 learner 状态）。
+          # 构造 synthetic candidate Instance 快照与 trusted deployment binding
+          # （全部 synthetic 数据；不触 GitHub、不含真实 learner 状态）。
           import sys
           from pathlib import Path
           import yaml
@@ -34,7 +34,7 @@ jobs:
               "instance": {"display_timezone": "Asia/Shanghai"},
               "nonproduction": True,
           }, sort_keys=False), encoding="utf-8")
-          (tmp / "trusted-context.yaml").write_text(yaml.safe_dump({
+          (tmp / "deployment-binding.yaml").write_text(yaml.safe_dump({
               "context_type": "synthetic",
               "core_repository_id": 1343815302,
               "core_commit": "0" * 40,
@@ -45,4 +45,66 @@ jobs:
           }, sort_keys=False), encoding="utf-8")
           PY
           python scripts/validate_learning_os.py "$tmp/instance" --instance \
-            --core-snapshot . --trusted-context "$tmp/trusted-context.yaml"
+            --core-snapshot . --deployment-binding "$tmp/deployment-binding.yaml"
+      - name: Validate synthetic offline split deployment (validate_deployment CLI surface)
+        run: |
+          tmp="$(mktemp -d)"
+          mkdir -p "$tmp/control" "$tmp/instance/config"
+          python - "$tmp" <<'PY'
+          # 构造 synthetic Runtime-Control deployment contract、Instance 快照、
+          # trusted locator 与 caller-supplied provenance（全 synthetic；Core
+          # 快照即本地 checkout，pin 为 synthetic 全零 commit）。
+          import sys
+          from pathlib import Path
+          import yaml
+          tmp = Path(sys.argv[1])
+          zero_commit = "0" * 40
+          (tmp / "control/deployment.yaml").write_text(yaml.safe_dump({
+              "schema_version": "0.4",
+              "document_type": "deployment_binding",
+              "updated_at": "2026-08-24T00:00:00+08:00",
+              "deployment": {
+                  "id": "dep-ci-synthetic-001",
+                  "topology": "split",
+                  "epoch": 1,
+                  "write_state": "active",
+              },
+              "core": {
+                  "repository_id": 1343815302,
+                  "commit": zero_commit,
+                  "repository_full_name": "suxyddjdgys-arch/learning-os-core",
+              },
+          }, sort_keys=False), encoding="utf-8")
+          (tmp / "instance/config/instance.yaml").write_text(yaml.safe_dump({
+              "schema_version": "0.4",
+              "document_type": "instance_config",
+              "product": {"id": "learning-os"},
+              "instance": {"display_timezone": "Asia/Shanghai"},
+              "nonproduction": True,
+          }, sort_keys=False), encoding="utf-8")
+          (tmp / "locator.yaml").write_text(yaml.safe_dump({
+              # runtime_control repository_id 为 synthetic（授权记录未提供真实
+              # Runtime-Control ID，不虚构真实值）；Core/Instance ID 与授权记录一致。
+              "runtime_control": {
+                  "repository_id": 9000000001,
+                  "repository": "suxyddjdgys-arch/learning-os-runtime-control",
+                  "canonical_ref": "main",
+                  "contract_path": "deployment.yaml",
+              },
+              "instance": {
+                  "repository_id": 1343815864,
+                  "repository": "suxyddjdgys-arch/learning-os-instance",
+              },
+          }, sort_keys=False), encoding="utf-8")
+          (tmp / "provenance.yaml").write_text(yaml.safe_dump({
+              "control": {"repository_id": 9000000001},
+              "core": {"repository_id": 1343815302, "commit_sha": zero_commit},
+              "instance": {"repository_id": 1343815864},
+          }, sort_keys=False), encoding="utf-8")
+          PY
+          python scripts/validate_learning_os.py . --deployment \
+            --control-snapshot "$tmp/control" \
+            --core-snapshot . \
+            --instance-snapshot "$tmp/instance" \
+            --locator "$tmp/locator.yaml" \
+            --provenance "$tmp/provenance.yaml"

@@ -36,8 +36,9 @@ def core_config(protocol: dict | None = None, reusable_bases: list | None = None
         "product": {"id": "learning-os", "name": "Learning OS"},
         "manifest": {
             "release": "0.4.0-candidate",
-            "artifact_schema": "0.4",
-            "supported_instance_schema_versions": ["0.3"],
+            # B2-B: manifest.artifact_schema 已移除；state schema 轴改由
+            # supported_instance_state_schema_versions 声明（G8 D1/D3）。
+            "supported_instance_state_schema_versions": ["0.3"],
             "canonical_status": "noncanonical",
             "deployment_status": "not_deployed",
         },
@@ -188,11 +189,6 @@ class CoreValidatorTests(unittest.TestCase):
         config["schema_version"] = "0.3"
         self.assertIn("core.schema_version", core_errors(self.make_snapshot(config=config)))
 
-    def test_fail_wrong_artifact_schema(self):
-        config = core_config()
-        config["manifest"]["artifact_schema"] = "0.3"
-        self.assertIn("core.artifact_schema", core_errors(self.make_snapshot(config=config)))
-
     def test_fail_unreliable_timestamp_semantics(self):
         config = core_config()
         config["time"]["require_reliable_source"] = False
@@ -203,9 +199,9 @@ class CoreValidatorTests(unittest.TestCase):
         (root / "config/core.yaml").unlink()
         self.assertIn("core.config_missing", core_errors(root))
 
-    def test_fail_missing_instance_schema_support(self):
+    def test_fail_missing_instance_state_schema_support(self):
         config = core_config()
-        config["manifest"]["supported_instance_schema_versions"] = []
+        config["manifest"]["supported_instance_state_schema_versions"] = []
         self.assertIn("core.instance_schema_support", core_errors(self.make_snapshot(config=config)))
 
     # ===== Negative: structural credentials/secrets =====

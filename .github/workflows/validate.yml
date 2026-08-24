@@ -14,5 +14,35 @@ jobs:
         run: python -m pip install -r requirements-dev.txt
       - name: Validate Core plane snapshot (validate_core)
         run: python scripts/validate_learning_os.py . --core
-      - name: Run deterministic Core tests (synthetic fixtures, ownership/privacy negative tests)
+      - name: Run deterministic Core/Instance tests (synthetic fixtures, ownership/privacy negative tests)
         run: python -m unittest discover -s tests -v
+      - name: Validate synthetic candidate Instance snapshot (validate_instance CLI surface)
+        run: |
+          tmp="$(mktemp -d)"
+          mkdir -p "$tmp/instance/config"
+          python - "$tmp" <<'PY'
+          # 构造 synthetic candidate Instance 快照与 trusted context（全部
+          # synthetic 数据；不触 GitHub、不含真实 learner 状态）。
+          import sys
+          from pathlib import Path
+          import yaml
+          tmp = Path(sys.argv[1])
+          (tmp / "instance/config/instance.yaml").write_text(yaml.safe_dump({
+              "schema_version": "0.4",
+              "document_type": "instance_config",
+              "product": {"id": "learning-os"},
+              "instance": {"display_timezone": "Asia/Shanghai"},
+              "nonproduction": True,
+          }, sort_keys=False), encoding="utf-8")
+          (tmp / "trusted-context.yaml").write_text(yaml.safe_dump({
+              "context_type": "synthetic",
+              "core_repository_id": 1343815302,
+              "core_commit": "0" * 40,
+              "instance_repository_id": 1343815864,
+              "topology": "noncanonical-split",
+              "epoch": 1,
+              "write_state": "not_deployed",
+          }, sort_keys=False), encoding="utf-8")
+          PY
+          python scripts/validate_learning_os.py "$tmp/instance" --instance \
+            --core-snapshot . --trusted-context "$tmp/trusted-context.yaml"

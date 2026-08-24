@@ -15,7 +15,7 @@
 
 schema_version: "0.4"
 document_type: core_config
-updated_at: 2026-08-24T09:30:55+08:00
+updated_at: 2026-08-24T11:30:00+08:00
 
 product:
   id: learning-os
@@ -23,10 +23,21 @@ product:
 
 manifest:
   release: "0.4.0-candidate"
-  artifact_schema: "0.4"
-  # Existing Instance artifacts stay schema 0.3 through migration (D2);
-  # the Core manifest declares the supported Instance schema versions.
-  supported_instance_schema_versions:
+  # Version-axis glossary (V0.4-B2-B, G8 decisions D1/D3):
+  #   schema_version (top level)      = Core config CONTRACT schema (this
+  #                                     document; V0.4-only contract -> 0.4).
+  #   release                         = Core release axis (candidate; becomes
+  #                                     0.4.0 only at actual promotion).
+  #   supported_instance_state_schema_versions
+  #                                   = learner/Topic/Evidence/runtime STATE
+  #                                     artifact schema versions this Core
+  #                                     supports. Per D2, existing state
+  #                                     artifacts remain schema 0.3 through
+  #                                     migration.
+  # The canonical learner state artifact schema axis is declared by each
+  # state document's own schema_version and constrained by the supported
+  # list above. No Core manifest field declares or changes that axis.
+  supported_instance_state_schema_versions:
     - "0.3"
   canonical_status: noncanonical
   deployment_status: not_deployed

@@ -1,0 +1,75 @@
+schema_version: "0.1"
+document_type: curriculum
+updated_at: 2026-08-19T21:26+08:00
+
+domain:
+  id: _template
+  title: Template Domain
+  aliases: []
+
+curriculum_version: "0.1"
+
+capability_profiles:
+  conceptual_core:
+    conceptual_structure: expected
+    explanation: expected
+    standard_application: expected
+    transfer: useful
+    formal_derivation: not_expected
+
+# Canonical minimal node example (comments only; do not copy placeholder IDs):
+# nodes:
+#   <domain>.foundation:
+#     title: Foundational concept
+#     kind: concept
+#     summary: A decision-relevant knowledge unit.
+#     importance:
+#       default: high
+#     capability_profile: conceptual_core
+#     capability_overrides: {}
+#     naturally_observes: []
+#     common_confusions: []
+#     diagnostic_prompts: []
+#     tags: []
+#
+#   <domain>.application:
+#     title: Initial application
+#     kind: application
+#     capability_profile: conceptual_core
+#     naturally_observes:
+#       - target:
+#           concept: <domain>.foundation
+#           capability: standard_application
+#         diagnosticity_ceiling: medium
+#
+# edges:
+#   - id: edge_foundation_to_application
+#     from: <domain>.foundation
+#     to: <domain>.application
+#     relation: supports
+#     strength: strong
+#
+# tracks:
+#   core:
+#     description: Main conceptual track.
+#     members:
+#       - <domain>.foundation
+#       - <domain>.application
+#     suggested_sequence:
+#       - <domain>.foundation
+#       - <domain>.application
+#
+# entry_paths:
+#   default:
+#     description: Default starting path.
+#     preferred_when: []
+#     starting_nodes:
+#       - <domain>.foundation
+
+nodes: {}
+edges: []
+tracks: {}
+entry_paths: {}
+
+# Node-ID aliases only. Domain nicknames belong in domain.aliases.
+aliases: {}

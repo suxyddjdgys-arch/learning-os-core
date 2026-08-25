@@ -51,6 +51,10 @@ The locator is the single external trust root:
       repository_id   # security identity
       repository      # navigation only
 
+`contract_path` is a repository-relative POSIX file path inside the materialized
+Runtime-Control snapshot. It MUST remain contained by that snapshot and MUST NOT
+use absolute/traversal/backslash path forms or traverse symlinks.
+
 Instance identity lives only in the locator. The public Runtime-Control
 contract MUST NOT carry Instance identity, lineage fields, migration
 transaction fields, or credentials.

@@ -18,38 +18,18 @@ LEGACY_CANONICAL_DOCUMENT_TYPES={
     "branch_registry","branch_runtime","branch_report","coordination_event",
     "hub_runtime","topic_report","learning_handoff","evidence",
 }
-# Current production legacy V0.3 schema-version compatibility, mechanically
-# compiled from production protocol/schema.md §2.1. This is deliberately
-# per-document-type: no fallback, wildcard, or V0.4 split-state axis applies.
+# Current production legacy V0.3 schema-version compatibility, compiled from
+# production protocol/schema.md §2.1. No fallback/wildcard exists; the V0.4
+# split Instance state schema axis is deliberately separate.
 LEGACY_SCHEMA_VERSIONS={
-    "project_config":{"0.3"},
-    "conversation_sequence_registry":{"0.3"},
-    "lineage_control":{"0.3"},
-    "learner_background":{"0.1"},
-    "learner_model":{"0.1"},
-    "learner_calibration":{"0.1"},
-    "learner_costs":{"0.1"},
-    "learner_execution":{"0.3"},
-    "learner_knowledge":{"0.3"},
-    "curriculum":{"0.1"},
-    "topic_goal":{"0.3"},
-    "topic_plan":{"0.3"},
-    "topic_progress":{"0.3"},
-    "topic_deferred":{"0.3"},
-    "subtopic_definition":{"0.3"},
-    "subtopic_plan":{"0.3"},
-    "subtopic_progress":{"0.3"},
-    "weekly_execution":{"0.3"},
-    "daily_execution":{"0.3"},
-    "execution_session":{"0.3"},
-    "branch_registry":{"0.3"},
-    "branch_runtime":{"0.3"},
-    "branch_report":{"0.3"},
-    "coordination_event":{"0.3"},
-    "hub_runtime":{"0.3"},
-    "topic_report":{"0.3"},
-    "learning_handoff":{"0.3"},
-    "evidence":{"0.3"},
+    "project_config":{"0.3"},"conversation_sequence_registry":{"0.3"},"lineage_control":{"0.3"},
+    "learner_background":{"0.1"},"learner_model":{"0.1"},"learner_calibration":{"0.1"},"learner_costs":{"0.1"},
+    "learner_execution":{"0.3"},"learner_knowledge":{"0.3"},"curriculum":{"0.1"},
+    "topic_goal":{"0.3"},"topic_plan":{"0.3"},"topic_progress":{"0.3"},"topic_deferred":{"0.3"},
+    "subtopic_definition":{"0.3"},"subtopic_plan":{"0.3"},"subtopic_progress":{"0.3"},
+    "weekly_execution":{"0.3"},"daily_execution":{"0.3"},"execution_session":{"0.3"},
+    "branch_registry":{"0.3"},"branch_runtime":{"0.3"},"branch_report":{"0.3"},"coordination_event":{"0.3"},
+    "hub_runtime":{"0.3"},"topic_report":{"0.3"},"learning_handoff":{"0.3"},"evidence":{"0.3"},
 }
 PLANNED={"planned","in_progress","completed","blocked","deferred","dropped"}; CONF={"low","medium","high"}
 CAP={"provisional","supported","conflicted","unsupported"}; EDIR={"support","challenge","neutral","deferred"}
@@ -176,7 +156,7 @@ class Validator:
                         if isinstance(x,dict) and "status" in x:self.enum(p,f"{s}.{x.get('id')}.status",x.get("status"),PLANNED)
     def refs(self):
         for p,d in self.docs.items():
-            if p in self.schema_blocked: continue
+            if p in self.schema_blocked:continue
             t=d.get("document_type")
             if t=="topic_progress":
                 q=self.docs.get(f"topics/{d.get('topic')}/plan.yaml")
@@ -229,7 +209,7 @@ class Validator:
             if isinstance(cur,int) and cur<b:self.error("sequence.repair_current",p,str(i))
     def authority(self):
         for p,d in self.docs.items():
-            if p in self.schema_blocked: continue
+            if p in self.schema_blocked:continue
             t=d.get("document_type")
             if t=="lineage_control":
                 a=d.get("active_generation");i=(d.get("bootstrap")or{}).get("initial_generation")
@@ -261,7 +241,7 @@ class Validator:
                     if ref and not (self.root/ref).exists():self.error("branch.handoff_ref",p,ref)
     def weekly(self):
         for p,d in self.docs.items():
-            if p in self.schema_blocked: continue
+            if p in self.schema_blocked:continue
             if d.get("document_type")!="weekly_execution" or d.get("current_outcomes") is None or d.get("closing") is not None:continue
             x=d.get("projection")
             if not isinstance(x,dict):self.error("weekly.projection",p,"open current_outcomes require provenance");continue
@@ -502,6 +482,689 @@ class DeploymentBinding:
         }
         return b
 
-# Remaining V0.4 Instance/Deployment implementation is unchanged from main.
-# The legacy schema-version change above is intentionally isolated from split
-# validators.  (This line is replaced by the unchanged main content below.)
+class InstanceValidator:
+    """Deterministic validate_instance(instance_snapshot, deployed_core,
+    deployment_binding) surface for the V0.4 Instance plane."""
+    def __init__(self,root:Path,core_root,deployment_binding):
+        self.root=root.resolve(); self.core_root=Path(core_root).resolve() if core_root is not None else None
+        self.deployment_binding=deployment_binding
+        self.findings=[]; self.docs={}; self.evidence=set(); self.curricula={}
+        self.core_bases={}; self.extensions={}; self.supported_state_schemas=None; self.core_product=None
+    def error(self,c,p,m): self.findings.append(Finding("error",c,p,m))
+    def enum(self,p,f,v,a):
+        if v not in a: self.error("enum.invalid",p,f"{f}={v!r} not in {sorted(a)}")
+    def run(self):
+        if not self.root.is_dir(): self.error("instance.snapshot",".","instance snapshot root is not a directory"); return self.findings
+        self.scan_top(); self.collect(); self.load_binding(); self.load_core()
+        self.check_documents(); self.build_curricula(); self.check_instance_config()
+        self.structural(); self.refs(); self.sequence(); self.authority(); self.weekly(); self.provenance()
+        return self.findings
+    @staticmethod
+    def instance_expected(p):
+        # 与 legacy expected() 相同的 Instance-plane 路径分类，另加 V0.4 curriculum 路径
+        exact={"config/instance.yaml":"instance_config","runtime/ui/conversation-sequences.yaml":"conversation_sequence_registry","learner/background.yaml":"learner_background","learner/model.yaml":"learner_model","learner/calibration.yaml":"learner_calibration","learner/costs.yaml":"learner_costs","learner/execution.yaml":"learner_execution"}
+        if p in exact:return exact[p]
+        pats=[(r"learner/knowledge/[^/]+\.yaml","learner_knowledge"),(r"curriculum/extensions/[^/]+\.yaml","curriculum_extension"),(r"curriculum/local/[^/]+/curriculum\.yaml","curriculum"),(r"evidence/[^/]+\.yaml","evidence"),(r"execution/weekly/[^/]+\.yaml","weekly_execution"),(r"topics/[^/]+/goal\.yaml","topic_goal"),(r"topics/[^/]+/plan\.yaml","topic_plan"),(r"topics/[^/]+/progress\.yaml","topic_progress"),(r"topics/[^/]+/deferred\.yaml","topic_deferred"),(r"topics/[^/]+/subtopics/[^/]+/definition\.yaml","subtopic_definition"),(r"topics/[^/]+/subtopics/[^/]+/plan\.yaml","subtopic_plan"),(r"topics/[^/]+/subtopics/[^/]+/progress\.yaml","subtopic_progress"),(r"topics/[^/]+/coordination/branches\.yaml","branch_registry"),(r"topics/[^/]+/coordination/branches/[^/]+/runtime\.yaml","branch_runtime"),(r"topics/[^/]+/execution/sessions/[^/]+\.yaml","execution_session"),(r"topics/[^/]+/subtopics/[^/]+/handoffs/[^/]+/[^/]+\.yaml","learning_handoff")]
+        return next((t for r,t in pats if re.fullmatch(r,p)),None)
+    def scan_top(self):
+        for e in sorted(self.root.iterdir()):
+            n=e.name
+            if n==".git": continue
+            if e.is_dir():
+                if n in INSTANCE_CORE_TOP: self.error("instance.core_owned_top",n,f"Instance snapshot must not contain {n}/ ({INSTANCE_CORE_TOP[n]} belongs to the Core plane)")
+                elif n not in INSTANCE_ALLOWED_TOP: self.error("instance.top_level",n,f"unexpected top-level directory {n}/")
+                if n=="config":
+                    for f in sorted(e.iterdir()):
+                        if f.name in INSTANCE_CONFIG_FORBIDDEN: self.error("instance.config_forbidden",f"config/{f.name}",INSTANCE_CONFIG_FORBIDDEN[f.name])
+                        elif f.name!="instance.yaml": self.error("instance.config_entry",f"config/{f.name}","only config/instance.yaml is allowed in the Instance config directory")
+                if n=="runtime":
+                    for sub in sorted(e.iterdir()):
+                        if sub.name=="lineages": self.error("instance.private_lineage","runtime/lineages","private project-design lineage control material belongs to the Control plane, never Instance")
+                        elif sub.name!="ui": self.error("instance.runtime_entry",f"runtime/{sub.name}","only runtime/ui/ is allowed under the Instance runtime directory")
+            elif n not in INSTANCE_ALLOWED_FILES: self.error("instance.top_level",n,f"unexpected top-level file {n}")
+    def collect(self):
+        for f in sorted(self.root.rglob("*.yaml")):
+            rp=f.relative_to(self.root)
+            if not rp.parts or rp.parts[0]==".git": continue
+            p=rp.as_posix()
+            try:d=yaml.safe_load(f.read_text(encoding="utf-8"))
+            except Exception as e:self.error("yaml.parse",p,str(e));continue
+            if not isinstance(d,dict):self.error("yaml.mapping",p,"canonical YAML must be mapping");continue
+            self.docs[p]=d
+            if d.get("document_type")=="evidence" and isinstance(d.get("id"),str):
+                if d["id"] in self.evidence:self.error("evidence.duplicate_id",p,d["id"])
+                self.evidence.add(d["id"])
+    def load_binding(self):
+        # 显式 trusted deployment binding：synthetic 形态（唯一 fixture
+        # schema，未知键一律拒绝）或 contract 投影形态（键集由
+        # DeploymentValidator 校验，此处仅复核字段格式）。fail closed。
+        b=self.deployment_binding
+        if b is None: self.error("instance.deployment_binding","<deployment-binding>","trusted deployment binding is required (fail closed)"); return
+        if isinstance(b,DeploymentBinding):
+            if b.form=="contract" and isinstance(b.fields,dict): d=b.fields; skip_synthetic_keys=True
+            elif b.form=="synthetic":
+                src=b.source; d=None; skip_synthetic_keys=False
+                if isinstance(src,dict): d=src
+                else:
+                    p=Path(src)
+                    if not p.is_file(): self.error("instance.deployment_binding",str(src),"deployment binding file is missing (fail closed)"); return
+                    try:d=yaml.safe_load(p.read_text(encoding="utf-8"))
+                    except Exception as e:self.error("instance.deployment_binding",str(src),str(e)); return
+            else: self.error("instance.deployment_binding","<deployment-binding>","unsupported binding form"); return
+        else:
+            # 兼容直接传 dict / YAML path 的调用方式（视作 synthetic 形态）
+            d=b; skip_synthetic_keys=False
+            if not isinstance(d,dict):
+                p=Path(d)
+                if not p.is_file(): self.error("instance.deployment_binding",str(d),"deployment binding file is missing (fail closed)"); return
+                try:d=yaml.safe_load(p.read_text(encoding="utf-8"))
+                except Exception as e:self.error("instance.deployment_binding",str(d),str(e)); return
+        if not isinstance(d,dict): self.error("instance.deployment_binding","<deployment-binding>","deployment binding must be a mapping"); return
+        if not skip_synthetic_keys:
+            unknown=sorted(set(d)-DEPLOYMENT_BINDING_KEYS)
+            if unknown: self.error("instance.deployment_binding_keys","<deployment-binding>",f"unknown deployment binding keys {unknown}; the binding schema must be extended explicitly")
+            for k in sorted(DEPLOYMENT_BINDING_KEYS):
+                if k not in d: self.error("instance.deployment_binding_missing",f"<deployment-binding>:{k}","missing required deployment binding key")
+            if d.get("context_type")!="synthetic": self.error("instance.deployment_binding_type","<deployment-binding>:context_type","only synthetic deployment bindings are valid fixtures; live bindings are projections of a validated deployment contract (validate_deployment)")
+        for k in ("core_repository_id","instance_repository_id"):
+            v=d.get(k)
+            if not isinstance(v,int) or isinstance(v,bool) or v<=0: self.error("instance.deployment_binding_id",f"<deployment-binding>:{k}","must be a positive integer repository ID")
+        cc=d.get("core_commit")
+        if not (isinstance(cc,str) and re.fullmatch(r"[0-9a-f]{40}",cc)): self.error("instance.deployment_binding_commit","<deployment-binding>:core_commit","must be a 40-hex core commit")
+        for k in ("topology","write_state"):
+            v=d.get(k)
+            if not isinstance(v,str) or not v.strip(): self.error("instance.deployment_binding_field",f"<deployment-binding>:{k}","must be a non-empty string")
+        ep=d.get("epoch")
+        if not isinstance(ep,int) or isinstance(ep,bool) or ep<1: self.error("instance.deployment_binding_epoch","<deployment-binding>:epoch","must be a positive integer")
+    def load_core(self):
+        # deployed_core 是本地物化的 Core 快照（trusted context pin 的 exact commit 检出）。
+        # 仅从快照读取 manifest 与 domain bases；不做 GitHub 在线发现。
+        if self.core_root is None or not self.core_root.is_dir(): self.error("instance.core_snapshot","<core-snapshot>","deployed Core snapshot is required (fail closed)"); return
+        cc=self.core_root/"config/core.yaml"
+        if not cc.is_file(): self.error("instance.core_config","config/core.yaml","Core snapshot is missing config/core.yaml (fail closed)"); return
+        try:d=yaml.safe_load(cc.read_text(encoding="utf-8"))
+        except Exception as e:self.error("instance.core_config","config/core.yaml",str(e)); return
+        if not isinstance(d,dict): self.error("instance.core_config","config/core.yaml","Core config must be a mapping"); return
+        self.core_product=(d.get("product") or {}).get("id") if isinstance(d.get("product"),dict) else None
+        m=d.get("manifest") or {}
+        sv=m.get("supported_instance_state_schema_versions") if isinstance(m,dict) else None
+        if isinstance(sv,list) and all(isinstance(x,str) and x for x in sv): self.supported_state_schemas=set(sv)
+        else: self.error("instance.core_manifest","config/core.yaml","Core manifest.supported_instance_state_schema_versions missing or invalid (fail closed)")
+        ddir=self.core_root/"domains"
+        if ddir.is_dir():
+            for f in sorted(ddir.glob("*/curriculum.yaml")):
+                try:c=yaml.safe_load(f.read_text(encoding="utf-8"))
+                except Exception: continue
+                if isinstance(c,dict) and isinstance(c.get("domain"),dict) and isinstance(c["domain"].get("id"),str): self.core_bases[c["domain"]["id"]]=c
+    def check_keys(self,p,d,t):
+        def walk(x,path):
+            if isinstance(x,dict):
+                for k,v in x.items():
+                    kp=f"{path}.{k}" if path else str(k)
+                    if k in INSTANCE_FORBIDDEN_KEYS: self.error("instance.authority_key",f"{p}:{kp}",f"forbidden Control/deployment/credential key: {k}")
+                    elif k in INSTANCE_LINEAGE_KEYS and t!="branch_runtime": self.error("instance.lineage_key",f"{p}:{kp}",f"lineage authority key {k} is only allowed in branch_runtime (learning lineage)")
+                    walk(v,kp)
+            elif isinstance(x,list):
+                for i,v in enumerate(x): walk(v,f"{path}[{i}]")
+            elif isinstance(x,str) and CORE_TOKEN_RE.search(x):
+                self.error("instance.credential_value",f"{p}:{path}","structurally detected credential/token value")
+        walk(d,"")
+    def check_documents(self):
+        for p,d in self.docs.items():
+            t=d.get("document_type")
+            if t is None: self.error("yaml.document_type",p,"missing document_type"); continue
+            if t in INSTANCE_FORBIDDEN_DOC_TYPES: self.error("instance.forbidden_document",p,f"{INSTANCE_FORBIDDEN_DOC_TYPES.get(t,'forbidden')} is not Instance-plane material")
+                # still fall through to key scan for defense in depth
+            elif t not in INSTANCE_ALL_TYPES: self.error("instance.unknown_document_type",p,f"unknown Instance document type {t!r}")
+            e=self.instance_expected(p)
+            if e and t!=e: self.error("path.document_type",p,f"expected {e}, found {t}")
+            if "schema_version" not in d: self.error("yaml.schema_version",p,"missing schema_version")
+            elif t in INSTANCE_STATE_TYPES and self.supported_state_schemas is not None and d["schema_version"] not in self.supported_state_schemas:
+                self.error("instance.state_schema_unsupported",p,f"state schema_version {d['schema_version']!r} not in Core supported_instance_state_schema_versions {sorted(self.supported_state_schemas)}")
+            elif t in INSTANCE_CONTRACT_TYPES and d["schema_version"]!=INSTANCE_SCHEMA:
+                self.error("instance.contract_schema",p,f"{t} is a V0.4-only contract document and requires schema_version {INSTANCE_SCHEMA!r}")
+            self.check_keys(p,d,t)
+        for f in sorted(self.root.rglob("*.md")):
+            if CORE_TOKEN_RE.search(f.read_text(encoding="utf-8")):
+                self.error("instance.credential_value",f.relative_to(self.root).as_posix(),"structurally detected credential/token value in document text")
+    def build_curricula(self):
+        # deterministic resolution order: Instance local domains -> Core bases
+        # -> extensions merged additively (collisions fail closed)
+        ldir=self.root/"curriculum/local"
+        if ldir.is_dir():
+            for f in sorted(ldir.glob("*/curriculum.yaml")):
+                p=f.relative_to(self.root).as_posix(); d=self.docs.get(p)
+                if d is None: continue
+                dom=(d.get("domain") or {}).get("id")
+                if not isinstance(dom,str): continue
+                if dom in self.core_bases: self.error("instance.domain_shadow",p,f"local domain {dom!r} collides with a Core base domain (same ID, different content)")
+                self.curricula[dom]={"nodes":d.get("nodes") or {},"aliases":d.get("aliases") or {},"version":d.get("curriculum_version")}
+        for dom,c in sorted(self.core_bases.items()):
+            if dom in self.curricula: continue
+            self.curricula[dom]={"nodes":c.get("nodes") or {},"aliases":c.get("aliases") or {},"version":c.get("curriculum_version")}
+        edir=self.root/"curriculum/extensions"
+        if edir.is_dir():
+            for f in sorted(edir.glob("*.yaml")):
+                p=f.relative_to(self.root).as_posix(); d=self.docs.get(p)
+                if d is None: continue
+                self.apply_extension(p,d)
+    def apply_extension(self,p,d):
+        # extension 语义：additive-only。任何对 Core base 对象的重定义/删除/
+        # 别名重定向/capability 覆盖均 fail closed。
+        dom=d.get("domain"); base=self.core_bases.get(dom) if isinstance(dom,str) else None
+        if not isinstance(dom,str) or not dom: self.error("instance.extension_domain",p,"extension requires a domain"); return
+        if base is None: self.error("instance.extension_base",p,f"extension domain {dom!r} has no Core base"); return
+        if d.get("base_version")!=base.get("curriculum_version"): self.error("instance.extension_base_version",p,f"base_version {d.get('base_version')!r} does not match Core base curriculum_version {base.get('curriculum_version')!r}")
+        r=d.get("extension_revision")
+        if not isinstance(r,int) or isinstance(r,bool) or r<1: self.error("instance.extension_revision",p,"extension_revision must be a positive integer")
+        bn=base.get("nodes") or {}
+        be={e.get("id") for e in base.get("edges") or [] if isinstance(e,dict)}
+        ba=base.get("aliases") or {}
+        bp=base.get("capability_profiles") or {}
+        for k,x in (d.get("nodes") or {}).items():
+            if k in bn: self.error("instance.node_collision",p,f"extension node {k!r} shadows a Core base node")
+            if isinstance(x,dict) and (x.get("tombstone") or x.get("deleted")): self.error("instance.core_delete",p,f"extension node {k!r} carries a delete/tombstone marker; extensions are additive-only")
+        for x in d.get("edges") or []:
+            if isinstance(x,dict):
+                if x.get("id") in be: self.error("instance.edge_collision",p,f"extension edge {x.get('id')!r} shadows a Core base edge")
+                if x.get("tombstone") or x.get("deleted"): self.error("instance.core_delete",p,f"extension edge {x.get('id')!r} carries a delete/tombstone marker; extensions are additive-only")
+        for k in (d.get("aliases") or {}):
+            if k in ba: self.error("instance.alias_redirect",p,f"extension alias {k!r} redefines a Core base alias")
+        for k in (d.get("capability_profiles") or {}):
+            if k in bp: self.error("instance.capability_override",p,f"extension capability profile {k!r} overrides a Core base profile")
+        pr=d.get("probes")
+        if pr is not None and (not isinstance(pr,list) or any(not isinstance(x,dict) or not x.get("id") for x in pr)): self.error("instance.extension_probes",p,"probes must be a list of mappings with ids")
+        v=self.curricula.setdefault(dom,{"nodes":{},"aliases":{},"version":base.get("curriculum_version")})
+        v["nodes"].update(d.get("nodes") or {}); v["aliases"].update(d.get("aliases") or {})
+        self.extensions[dom]=d
+    def check_instance_config(self):
+        p="config/instance.yaml"
+        if p not in self.docs: self.error("instance.config_missing",p,"config/instance.yaml is required (fail closed)"); return
+        d=self.docs[p]
+        prod=d.get("product") or {}
+        if not (isinstance(prod.get("id"),str) and prod["id"].strip()): self.error("instance.product_identity",p,"product.id must be a non-empty string")
+        elif isinstance(self.core_product,str) and prod["id"]!=self.core_product: self.error("instance.product_mismatch",p,f"product.id {prod['id']!r} does not match deployed Core product.id {self.core_product!r}")
+        inst=d.get("instance") or {}
+        if not (isinstance(inst.get("display_timezone"),str) and inst["display_timezone"].strip()): self.error("instance.timezone",p,"instance.display_timezone must be a non-empty string")
+        for k in d:
+            if k in INSTANCE_CONFIG_CORE_SECTIONS: self.error("instance.core_override",f"{p}:{k}",f"{k} is Core-owned reusable semantics; instance.yaml must not override it")
+        if "nonproduction" in d and not isinstance(d["nonproduction"],bool): self.error("instance.nonproduction",p,"nonproduction must be a boolean")
+    def structural(self):
+        req={"instance_config":("product","instance"),"curriculum_extension":("domain","base_version","extension_revision"),"conversation_sequence_registry":("sequence_format","scopes"),"learner_knowledge":("revision","domain","concepts"),"curriculum":("domain","curriculum_version","nodes"),"topic_goal":("revision","topic","goal"),"topic_plan":("revision","topic","plan"),"topic_progress":("revision","topic","plan_revision","lifecycle","milestones"),"subtopic_definition":("subtopic",),"subtopic_plan":("revision","topic","subtopic","plan"),"subtopic_progress":("revision","topic","subtopic","plan_revision","milestones"),"weekly_execution":("revision","window"),"branch_registry":("revision","topic","branches"),"branch_runtime":("revision","topic","branch_id","lineage_id","active_generation","pending_successor","generations"),"execution_session":("id","topic","branch","meaningful_learning"),"learning_handoff":("topic","branch_id","lineage_id","from_generation","to_generation"),"evidence":("id","observed_at","observation","interpretation","targets")}
+        for p,d in self.docs.items():
+            t=d.get("document_type")
+            if t not in INSTANCE_ALL_TYPES: continue
+            for k in req.get(t,()):
+                if k not in d:self.error("document.required",p,f"missing {k}")
+            if t=="topic_plan":self.enum(p,"plan.status",(d.get("plan")or{}).get("status"),{"awaiting_intake","provisional","active","paused"})
+            elif t=="topic_progress":
+                self.enum(p,"lifecycle",d.get("lifecycle"),TLIFE)
+                for k,x in (d.get("milestones")or{}).items():
+                    if isinstance(x,dict):self.enum(p,f"milestones.{k}.status",x.get("status"),PLANNED)
+            elif t=="subtopic_definition":s=d.get("subtopic")or{};self.enum(p,"subtopic.kind",s.get("kind"),SKIND);self.enum(p,"subtopic.lifecycle",s.get("lifecycle"),SLIFE)
+            elif t=="subtopic_plan":self.enum(p,"plan.status",(d.get("plan")or{}).get("status"),{"provisional","active","paused"})
+            elif t=="subtopic_progress":
+                for k,x in (d.get("milestones")or{}).items():
+                    if isinstance(x,dict):self.enum(p,f"milestones.{k}.status",x.get("status"),PLANNED)
+            elif t=="learner_knowledge":
+                for c,x in (d.get("concepts")or{}).items():
+                    for a,y in ((x or{}).get("capabilities")or{}).items():self.enum(p,f"{c}.{a}.state",y.get("state"),CAP);self.enum(p,f"{c}.{a}.confidence",y.get("confidence"),CONF)
+            elif t=="evidence":
+                x=d.get("interpretation")or{};self.enum(p,"interpretation.direction",x.get("direction"),EDIR)
+                for k in ("diagnosticity","novelty","confidence"):self.enum(p,f"interpretation.{k}",x.get(k),CONF)
+                if "classification_confidence" in x or "classification_confidence" in d:self.error("evidence.legacy_confidence",p,"use interpretation.confidence")
+            elif t in ("curriculum","curriculum_extension"):
+                for k,x in (d.get("nodes")or{}).items():
+                    if isinstance(x,dict):self.enum(p,f"nodes.{k}.kind",x.get("kind"),NKIND)
+                for x in d.get("edges")or[]:
+                    if isinstance(x,dict):self.enum(p,"edge.relation",x.get("relation"),EREL);self.enum(p,"edge.strength",x.get("strength"),ESTR)
+            elif t=="branch_registry":
+                for k,x in (d.get("branches")or{}).items():self.enum(p,f"branches.{k}.role",x.get("role"),BROLE);self.enum(p,f"branches.{k}.lifecycle",x.get("lifecycle"),BLIFE)
+            elif t=="branch_runtime":
+                for k,x in (d.get("generations")or{}).items():
+                    if isinstance(x,dict):self.enum(p,f"generations.{k}.lifecycle",x.get("lifecycle"),GEN)
+            elif t=="weekly_execution":
+                for s in ("baseline_outcomes","current_outcomes"):
+                    for x in d.get(s)or[]:
+                        if isinstance(x,dict) and "status" in x:self.enum(p,f"{s}.{x.get('id')}.status",x.get("status"),PLANNED)
+    def refs(self):
+        # 与 legacy refs() 相同的语义检查，但 curriculum 解析针对
+        # effective view（Core base + Instance extension 合并视图）。
+        for p,d in self.docs.items():
+            t=d.get("document_type")
+            if t=="topic_progress":
+                q=self.docs.get(f"topics/{d.get('topic')}/plan.yaml")
+                if q and d.get("plan_revision")!=q.get("revision"):self.error("revision.topic_progress_plan",p,"plan_revision != current topic plan revision")
+            elif t=="subtopic_progress":
+                q=self.docs.get(f"topics/{d.get('topic')}/subtopics/{d.get('subtopic')}/plan.yaml")
+                if q and d.get("plan_revision")!=q.get("revision"):self.error("revision.subtopic_progress_plan",p,"plan_revision != current subtopic plan revision")
+            elif t=="topic_plan":
+                q=self.docs.get(f"topics/{d.get('topic')}/goal.yaml");r=((d.get("plan")or{}).get("based_on")or{}).get("goal_revision")
+                if q and isinstance(r,int) and r>q.get("revision",r):self.error("revision.topic_plan_goal_future",p,"goal_revision points to future revision")
+            elif t=="subtopic_plan":
+                q=self.docs.get(f"topics/{d.get('topic')}/plan.yaml");r=((d.get("plan")or{}).get("based_on")or{}).get("topic_plan_revision")
+                if q and isinstance(r,int) and r>q.get("revision",r):self.error("revision.subtopic_plan_topic_future",p,"topic_plan_revision points to future revision")
+                for m in (d.get("plan")or{}).get("milestones")or[]:
+                    for r in (m or{}).get("curriculum_refs")or[]:
+                        if not isinstance(r,dict) or r.get("type")!="curriculum_node":continue
+                        c=self.curricula.get(r.get("domain"));n=r.get("id")
+                        if not c:self.error("reference.curriculum_domain",p,f"missing curriculum {r.get('domain')}");continue
+                        nodes,aliases=c.get("nodes")or{},c.get("aliases")or{};a=aliases.get(n)
+                        if isinstance(a,dict):a=a.get("to")or a.get("target")or a.get("id")
+                        if n not in nodes and (not isinstance(a,str) or a not in nodes):self.error("reference.curriculum_node",p,f"unresolved curriculum node {r.get('domain')}:{n}")
+            elif t=="learner_knowledge":
+                for c,x in (d.get("concepts")or{}).items():
+                    for a,y in ((x or{}).get("capabilities")or{}).items():
+                        for side in ("support","challenge"):
+                            for r in ((y or{}).get("evidence_refs")or{}).get(side)or[]:
+                                if r not in self.evidence:self.error("reference.evidence_missing",p,f"{c}.{a} -> {r}")
+    def sequence(self):
+        p="runtime/ui/conversation-sequences.yaml";d=self.docs.get(p)
+        if not d:return
+        scopes=d.get("scopes")or{};np=False
+        for s,x in scopes.items():
+            if not isinstance(x,dict):self.error("sequence.scope_record",p,s);continue
+            n=x.get("last_allocated")
+            if not isinstance(n,int) or isinstance(n,bool) or n<0:self.error("sequence.last_allocated",p,s)
+            if s.startswith(("acceptance:","test:")):np=True;Validator.prod(s.split(":",1)[1]) or self.error("sequence.nonproduction_scope",p,s)
+            elif not Validator.prod(s):self.error("sequence.production_scope",p,s)
+        if np and (d.get("nonproduction_sequence_format")or{}).get("prefix")!="T":self.error("sequence.nonproduction_prefix",p,"non-production prefix must be T")
+        w=(d.get("sequence_format")or{}).get("minimum_width",2)
+        for i,r in enumerate(d.get("repair_history")or[]):
+            if not isinstance(r,dict):self.error("sequence.repair_record",p,str(i));continue
+            a,b=r.get("previous_last_allocated"),r.get("repaired_last_allocated")
+            if not Validator.prod(str(r.get("scope"))):self.error("sequence.repair_scope",p,str(i))
+            if not all(isinstance(x,int) and not isinstance(x,bool) for x in (a,b)) or not 0<=b<a:self.error("sequence.repair_range",p,str(i));continue
+            if r.get("orphaned_suffix")!=[f"C{n:0{w}d}" for n in range(b+1,a+1)]:self.error("sequence.repair_suffix",p,str(i))
+            if any(not r.get(k) for k in ("reason","repaired_at","authority")):self.error("sequence.repair_provenance",p,str(i))
+            cur=(scopes.get(r.get("scope"))or{}).get("last_allocated")
+            if isinstance(cur,int) and cur<b:self.error("sequence.repair_current",p,str(i))
+    def check_instance_ref(self,p,ref,field,require_exists=True):
+        # Instance 内部物理引用规则：必须相对路径、禁止 ../ 穿越、禁止绝对
+        # 路径、只能落在 Instance 自有 plane 内（cross-plane 引用 fail closed）。
+        if not isinstance(ref,str) or not ref.strip(): self.error("instance.ref_invalid",f"{p}:{field}",repr(ref)); return False
+        if ref.startswith(("/","~")) or re.match(r"^[A-Za-z]:[\\/]",ref): self.error("instance.ref_absolute",f"{p}:{field}",ref); return False
+        if ".." in ref.split("/"): self.error("instance.ref_traversal",f"{p}:{field}",ref); return False
+        if not ref.startswith(INSTANCE_REF_PREFIXES): self.error("instance.ref_cross_plane",f"{p}:{field}",f"{ref} resolves outside Instance-owned planes"); return False
+        if require_exists and not (self.root/ref).is_file(): self.error("instance.ref_missing",f"{p}:{field}",ref); return False
+        return True
+    def authority(self):
+        # Instance 只校验学习 lineage（branch_runtime）；project-design
+        # lineage（lineage_control）已在 check_documents 中被拒绝。
+        for p,d in self.docs.items():
+            if d.get("document_type")!="branch_runtime": continue
+            a=d.get("active_generation");g=d.get("generations")or{};r=g.get(a,g.get(str(a))) if isinstance(a,int) else None
+            if r is None:self.error("branch.active_record",p,f"missing generation {a}");continue
+            act=[k for k,x in g.items() if isinstance(x,dict) and x.get("lifecycle")=="active"];h=d.get("pending_successor")
+            if h is None:
+                if len(act)!=1:self.error("branch.active_count",p,f"active={act}")
+                if r.get("lifecycle")!="active":self.error("branch.active_lifecycle",p,"active record not active")
+            else:
+                n=h.get("generation") if isinstance(h,dict) else h
+                if r.get("lifecycle")!="handoff_pending":self.error("branch.pending_lifecycle",p,"source not handoff_pending")
+                if not isinstance(n,int) or n<=a:self.error("branch.pending_generation",p,"pending successor must advance")
+            for x in g.values():
+                ref=x.get("handoff_ref") if isinstance(x,dict) else None
+                if ref: self.check_instance_ref(p,ref,"handoff_ref")
+    def weekly(self):
+        for p,d in self.docs.items():
+            if d.get("document_type")!="weekly_execution" or d.get("current_outcomes") is None or d.get("closing") is not None:continue
+            x=d.get("projection")
+            if not isinstance(x,dict):self.error("weekly.projection",p,"open current_outcomes require provenance");continue
+            if not x.get("observed_at"):self.error("weekly.projection_observed_at",p,"missing observed_at")
+            if x.get("reconciliation") not in {"read_time","explicit_reconciliation"}:self.error("weekly.projection_reconciliation",p,"invalid reconciliation")
+            src=x.get("source_revisions")or[]
+            if not isinstance(src,list) or not src:self.error("weekly.projection_sources",p,"missing sources");continue
+            for s in src:
+                if not isinstance(s,dict) or not s.get("ref") or not isinstance(s.get("revision"),int):self.error("weekly.projection_source",p,"invalid source");continue
+                # source ref 必须严格落在 Instance root 内且属于 Instance plane
+                if not self.check_instance_ref(p,s["ref"],"source_revisions.ref",require_exists=False):continue
+                q=self.docs.get(s["ref"])
+                if q is None:self.error("weekly.projection_source_missing",p,s["ref"])
+                elif isinstance(q.get("revision"),int) and s["revision"]>q["revision"]:self.error("weekly.projection_source_future",p,s["ref"])
+    def provenance(self):
+        # Plan provenance：legacy form（curriculum_version）与 new form
+        # （base_version + extension_revision）同时接受；同一条目同时出现
+        # 两种字段 = ambiguous = fail closed。不迁移任何 production Plan。
+        for p,d in self.docs.items():
+            if d.get("document_type")!="topic_plan": continue
+            cur=((d.get("plan")or{}).get("based_on")or{}).get("curricula")
+            if cur is None: continue
+            if not isinstance(cur,list): self.error("instance.provenance_form",p,"plan.based_on.curricula must be a list"); continue
+            for i,e in enumerate(cur):
+                where=f"{p}:based_on.curricula[{i}]"
+                if not isinstance(e,dict): self.error("instance.provenance_form",where,"entry must be a mapping"); continue
+                dom=e.get("domain"); legacy_v=e.get("curriculum_version"); base_v=e.get("base_version"); ext_r=e.get("extension_revision")
+                has_legacy=legacy_v is not None; has_new=base_v is not None or ext_r is not None
+                if has_legacy and has_new: self.error("instance.provenance_ambiguous",where,"entry mixes legacy curriculum_version and V0.4 base_version/extension_revision forms")
+                elif has_legacy:
+                    v=self.curricula.get(dom)
+                    if v is None: self.error("instance.provenance_domain",where,f"unknown curriculum domain {dom!r}")
+                    elif legacy_v!=v.get("version"): self.error("instance.provenance_version",where,f"curriculum_version {legacy_v!r} != effective curriculum version {v.get('version')!r}")
+                elif has_new:
+                    base=self.core_bases.get(dom)
+                    if base is None: self.error("instance.provenance_domain",where,f"new-form provenance requires a Core base domain, got {dom!r}")
+                    else:
+                        if base_v!=base.get("curriculum_version"): self.error("instance.provenance_base",where,f"base_version {base_v!r} != Core base curriculum_version {base.get('curriculum_version')!r}")
+                        if not isinstance(ext_r,int) or isinstance(ext_r,bool) or ext_r<1: self.error("instance.provenance_revision",where,"extension_revision must be a positive integer")
+                        elif dom not in self.extensions or ext_r>self.extensions[dom].get("extension_revision",-1): self.error("instance.provenance_extension",where,f"references extension revision that does not exist for domain {dom!r}")
+                else: self.error("instance.provenance_form",where,"entry carries neither curriculum_version nor base_version/extension_revision")
+
+def validate_instance(instance_snapshot, deployed_core, deployment_binding):
+    """V0.4 Instance plane validation surface:
+    validate_instance(instance_snapshot, deployed_core, deployment_binding).
+
+    instance_snapshot: materialized Instance tree path (or RepositorySnapshot).
+    deployed_core: locally materialized Core snapshot path (exact pinned
+        commit checkout) or RepositorySnapshot. Never "latest Core main";
+        GitHub is not consulted.
+    deployment_binding: explicit trusted deployment binding — a DeploymentBinding,
+        dict, or YAML file path. Synthetic fixtures carry the single binding
+        schema (context_type: synthetic); live bindings are projections of a
+        validated deployment contract (see validate_deployment). Live epoch
+        enforcement, write_state routing, ID resolution remain runtime/resolver
+        surfaces and are not implemented here.
+
+    Deterministic and offline. Fail-closed privacy/ownership boundary
+    enforcement for the Instance plane, not complete secret detection.
+    """
+    # 显式类型判断（Path.root 是 "/"，不能用 getattr 识别 RepositorySnapshot）
+    iroot=instance_snapshot.root if isinstance(instance_snapshot,RepositorySnapshot) else instance_snapshot
+    croot=deployed_core.root if isinstance(deployed_core,RepositorySnapshot) else deployed_core
+    return InstanceValidator(Path(iroot),croot,deployment_binding).run()
+
+# ===== V0.4 Deployment plane surface (authorized V0.4-B2-C) =====
+# validate_deployment(control_snapshot, deployed_core, instance_snapshot,
+# trusted_locator) is the split deployment validation surface. Deterministic
+# and offline: it never resolves repositories, never contacts GitHub, never
+# fetches live deployment state and never checks platform permissions
+# (no resolve_repository / lookup_github / fetch_live_deployment /
+# check_platform_permissions — those belong to a future resolver/runtime
+# surface). Snapshot provenance is CALLER-SUPPLIED trusted resolver output;
+# self-declared identity inside any repository content is never trusted.
+
+DEPLOYMENT_SCHEMA="0.4"
+DEPLOYMENT_DOC_TYPE="deployment_binding"
+# public Runtime-Control deployment contract allowlist（fail closed：allowlist
+# 外任何键都拒绝；Instance identity / lineage / migration / credentials
+# 属于被禁的信任边界内容，见 DEPLOYMENT_TRUST_BOUNDARY_KEYS）
+DEPLOYMENT_TOP_KEYS={"schema_version","document_type","updated_at","deployment","core"}
+DEPLOYMENT_SECTION_KEYS={"deployment":{"id","topology","epoch","write_state"},"core":{"repository_id","commit","repository_full_name"}}
+DEPLOYMENT_REQUIRED={"deployment":{"id","topology","epoch","write_state"},"core":{"repository_id","commit"}}
+DEPLOYMENT_TOPOLOGIES={"split"}
+DEPLOYMENT_WRITE_STATES={"active","frozen"}
+DEPLOYMENT_TRUST_BOUNDARY_KEYS={
+    "instance_repository_id":"Instance identity must come from the trusted locator, never the public contract",
+    "instance_repository_full_name":"Instance identity must come from the trusted locator, never the public contract",
+    "instance_canonical_ref":"Instance identity must come from the trusted locator, never the public contract",
+    "instance":"Instance identity block is forbidden in the public Runtime-Control contract",
+    "runtime_control_repository_id":"a repository must not self-assert its own trusted identity",
+    "active_generation":"lineage authority does not belong in a deployment contract",
+    "pending_handoff":"lineage authority does not belong in a deployment contract",
+    "handoff_id":"lineage authority does not belong in a deployment contract",
+    "lineage_control":"lineage authority does not belong in a deployment contract",
+    "migration_transaction":"migration transaction state belongs to private Control, never the public contract",
+    "migration_authorized":"migration authorization belongs to private Control, never the public contract",
+    "migration_authorization":"migration authorization belongs to private Control, never the public contract",
+    "migration_state":"migration transaction state belongs to private Control, never the public contract",
+    "secret":"credentials are forbidden in the public contract","secrets":"credentials are forbidden in the public contract",
+    "token":"credentials are forbidden in the public contract","tokens":"credentials are forbidden in the public contract",
+    "password":"credentials are forbidden in the public contract","api_key":"credentials are forbidden in the public contract",
+    "api_token":"credentials are forbidden in the public contract","private_key":"credentials are forbidden in the public contract",
+    "credential":"credentials are forbidden in the public contract","credentials":"credentials are forbidden in the public contract",
+}
+# 外部 trusted locator 契约（TRUST ROOT；navigation 字段不参与信任判断）
+LOCATOR_TOP_KEYS={"runtime_control","instance"}
+LOCATOR_RC_KEYS={"repository_id","repository","canonical_ref","contract_path"}
+LOCATOR_INSTANCE_KEYS={"repository_id","repository"}
+
+class DeploymentValidator:
+    """Deterministic validate_deployment(control_snapshot, deployed_core,
+    instance_snapshot, trusted_locator) surface for the V0.4 split planes.
+
+    复用 validate_core() 与 validate_instance()（经 InstanceValidator），
+    不复制其逻辑；本面只新增 deployment contract 结构/身份/信任边界检查。
+    """
+    def __init__(self,control,core,instance,locator):
+        self.control=control; self.core=core; self.instance=instance; self.locator_source=locator
+        self.findings=[]
+    def error(self,c,p,m): self.findings.append(Finding("error",c,p,m))
+    def run(self):
+        self.resolve_snapshots(); self.load_locator(); self.load_contract()
+        if self.contract is None: return self.findings
+        self.check_contract_structure(); self.check_trust_boundary()
+        self.check_identity(); self.reuse_sub_surfaces()
+        return self.findings
+    # --- snapshots：必须是携带 trusted provenance 的 RepositorySnapshot ---
+    def resolve_snapshots(self):
+        self.control_snap=self.core_snap=self.instance_snap=None
+        for label,v in (("control",self.control),("core",self.core),("instance",self.instance)):
+            if v is None: self.error("deployment.snapshot_missing",f"<{label}-snapshot>",f"{label} snapshot with caller-supplied trusted provenance is required (fail closed)"); continue
+            if not isinstance(v,RepositorySnapshot):
+                self.error("deployment.snapshot_provenance",f"<{label}-snapshot>",f"{label} snapshot must be a RepositorySnapshot with explicit trusted provenance (root/repository_id[/commit_sha]); bare paths cannot prove identity"); continue
+            if not v.root.is_dir(): self.error("deployment.snapshot_root",f"<{label}-snapshot>",f"{label} snapshot root {v.root} is not a directory")
+        self.control_snap=self.control if isinstance(self.control,RepositorySnapshot) else None
+        self.core_snap=self.core if isinstance(self.core,RepositorySnapshot) else None
+        self.instance_snap=self.instance if isinstance(self.instance,RepositorySnapshot) else None
+        if self.core_snap is not None and self.core_snap.commit_sha is None:
+            self.error("deployment.core_provenance","<core-snapshot>","deployed Core snapshot provenance requires the exact pinned commit_sha (fail closed)")
+    # --- trusted locator：唯一的外部信任根 ---
+    def load_locator(self):
+        self.locator=None
+        src=self.locator_source
+        if src is None: self.error("deployment.locator","<trusted-locator>","trusted locator is required (fail closed)"); return
+        if isinstance(src,dict): d=src
+        else:
+            p=Path(src)
+            if not p.is_file(): self.error("deployment.locator",str(src),"trusted locator file is missing (fail closed)"); return
+            try:d=yaml.safe_load(p.read_text(encoding="utf-8"))
+            except Exception as e:self.error("deployment.locator",str(src),str(e)); return
+        if not isinstance(d,dict): self.error("deployment.locator","<trusted-locator>","trusted locator must be a mapping"); return
+        unknown=sorted(set(d)-LOCATOR_TOP_KEYS)
+        if unknown: self.error("deployment.locator_keys","<trusted-locator>",f"unknown locator keys {unknown}")
+        rc=d.get("runtime_control"); inst=d.get("instance")
+        if not isinstance(rc,dict): self.error("deployment.locator_runtime_control","<trusted-locator>:runtime_control","runtime_control block with repository_id is required"); rc={}
+        if not isinstance(inst,dict): self.error("deployment.locator_instance","<trusted-locator>:instance","instance block with repository_id is required"); inst={}
+        for blk,allowed,where in ((rc,LOCATOR_RC_KEYS,"runtime_control"),(inst,LOCATOR_INSTANCE_KEYS,"instance")):
+            u=sorted(set(blk)-allowed)
+            if u: self.error("deployment.locator_keys",f"<trusted-locator>:{where}",f"unknown keys {u}")
+            v=blk.get("repository_id")
+            if not isinstance(v,int) or isinstance(v,bool) or v<=0: self.error("deployment.locator_id",f"<trusted-locator>:{where}.repository_id","must be a positive integer repository ID (security identity)")
+            for nk in ("repository","canonical_ref","contract_path"):
+                if nk in blk and not (isinstance(blk[nk],str) and blk[nk].strip()):
+                    self.error("deployment.locator_field",f"<trusted-locator>:{where}.{nk}","must be a non-empty string (navigation only)")
+        if "contract_path" not in rc: rc=dict(rc,contract_path="deployment.yaml")
+        if "canonical_ref" not in rc: rc=dict(rc,canonical_ref="main")
+        self.locator={"runtime_control":rc,"instance":inst}
+    # --- deployment contract：结构化 allowlist + fail closed ---
+    def load_contract(self):
+        self.contract=None; self.contract_path=None
+        if self.locator is None or not isinstance(self.locator.get("runtime_control"),dict): return
+        if self.control_snap is None: return
+        cp=self.locator["runtime_control"].get("contract_path")
+        if cp is None: cp="deployment.yaml"
+        p,reason,message=resolve_repository_relative_file(self.control_snap.root,cp)
+        if reason is not None:
+            where="<trusted-locator>:runtime_control.contract_path"
+            if reason=="missing": self.error("deployment.contract_missing",where,f"deployment contract {cp!r} is missing inside the Runtime-Control snapshot (fail closed)")
+            else: self.error(f"deployment.contract_path_{reason}",where,f"invalid Runtime-Control contract_path {cp!r}: {message}")
+            return
+        self.contract_path=p
+        try:d=yaml.safe_load(p.read_text(encoding="utf-8"))
+        except Exception as e:self.error("yaml.parse",p.as_posix(),str(e)); return
+        if not isinstance(d,dict): self.error("yaml.mapping",p.as_posix(),"deployment contract must be a mapping"); return
+        self.contract=d
+    def check_contract_structure(self):
+        p=self.contract_path.as_posix(); d=self.contract
+        if d.get("schema_version")!=DEPLOYMENT_SCHEMA: self.error("deployment.schema_version",p,f"deployment contract schema_version must be {DEPLOYMENT_SCHEMA!r}")
+        if d.get("document_type")!=DEPLOYMENT_DOC_TYPE: self.error("deployment.document_type",p,f"deployment contract document_type must be {DEPLOYMENT_DOC_TYPE!r}")
+        unknown=sorted(set(d)-DEPLOYMENT_TOP_KEYS)
+        if unknown: self.error("deployment.forbidden_field",p,f"unknown top-level contract fields {unknown}; the public contract is allowlist-only")
+        dep=d.get("deployment") or {}; core=d.get("core") or {}
+        if not isinstance(dep,dict): self.error("deployment.section",p,"deployment section must be a mapping"); dep={}
+        if not isinstance(core,dict): self.error("deployment.section",p,"core section must be a mapping"); core={}
+        for sec,obj in (("deployment",dep),("core",core)):
+            u=sorted(set(obj)-DEPLOYMENT_SECTION_KEYS[sec])
+            if u: self.error("deployment.forbidden_field",f"{p}:{sec}",f"unknown {sec} fields {u}; the public contract is allowlist-only")
+            for k in DEPLOYMENT_REQUIRED[sec]:
+                if k not in obj: self.error("deployment.required_field",f"{p}:{sec}.{k}",f"missing required field {sec}.{k}")
+        i=dep.get("id")
+        if not (isinstance(i,str) and i.strip()): self.error("deployment.id",f"{p}:deployment.id","must be a non-empty string")
+        if dep.get("topology") not in DEPLOYMENT_TOPOLOGIES: self.error("deployment.topology",f"{p}:deployment.topology",f"must be one of {sorted(DEPLOYMENT_TOPOLOGIES)}")
+        ep=dep.get("epoch")
+        if not isinstance(ep,int) or isinstance(ep,bool) or ep<1: self.error("deployment.epoch",f"{p}:deployment.epoch","must be a positive integer (monotonic fencing token)")
+        if dep.get("write_state") not in DEPLOYMENT_WRITE_STATES: self.error("deployment.write_state",f"{p}:deployment.write_state",f"must be one of {sorted(DEPLOYMENT_WRITE_STATES)}")
+        rid=core.get("repository_id")
+        if not isinstance(rid,int) or isinstance(rid,bool) or rid<=0: self.error("deployment.core_repository_id",f"{p}:core.repository_id","must be a positive integer repository ID (security identity; owner/name is navigation only)")
+        cc=core.get("commit")
+        if not (isinstance(cc,str) and re.fullmatch(r"[0-9a-f]{40}",cc)):
+            self.error("deployment.core_commit",f"{p}:core.commit","must be the exact 40-hex deployed commit; abbreviated SHA and branch/tag/ref names are not valid pins")
+        fn=core.get("repository_full_name")
+        if fn is not None and not (isinstance(fn,str) and fn.strip()): self.error("deployment.core_navigation",f"{p}:core.repository_full_name","optional navigation metadata must be a non-empty string")
+    def check_trust_boundary(self):
+        # 公开 contract 的信任边界：递归扫描禁键 + 结构化 token 值检测
+        p=self.contract_path.as_posix()
+        def walk(x,path):
+            if isinstance(x,dict):
+                for k,v in x.items():
+                    kp=f"{path}.{k}" if path else str(k)
+                    if k in DEPLOYMENT_TRUST_BOUNDARY_KEYS: self.error("deployment.trust_boundary",f"{p}:{kp}",DEPLOYMENT_TRUST_BOUNDARY_KEYS[k])
+                    walk(v,kp)
+            elif isinstance(x,list):
+                for i,v in enumerate(x): walk(v,f"{path}[{i}]")
+            elif isinstance(x,str) and CORE_TOKEN_RE.search(x):
+                self.error("deployment.credential_value",f"{p}:{path}","structurally detected credential/token value")
+        walk(self.contract,"")
+        if CORE_TOKEN_RE.search(self.contract_path.read_text(encoding="utf-8")):
+            self.error("deployment.credential_value",p,"structurally detected credential/token value in contract text")
+    def check_identity(self):
+        # 身份相等性：locator（TRUST ROOT）与 snapshot provenance（trusted
+        # resolver output）双向核对；owner/name 永不参与判断。
+        p=self.contract_path.as_posix(); d=self.contract
+        if self.control_snap is not None and self.locator is not None:
+            exp=self.locator["runtime_control"].get("repository_id")
+            if isinstance(exp,int) and self.control_snap.repository_id!=exp:
+                self.error("deployment.control_identity","<control-snapshot>",f"resolved Runtime-Control repository ID {self.control_snap.repository_id} != trusted locator expected {exp} (trust failure)")
+        core=d.get("core") or {}
+        if self.core_snap is not None:
+            if isinstance(core.get("repository_id"),int):
+                if self.core_snap.repository_id!=core["repository_id"]:
+                    self.error("deployment.core_identity","<core-snapshot>",f"contract core.repository_id {core['repository_id']} != trusted snapshot provenance {self.core_snap.repository_id}")
+            if isinstance(core.get("commit"),str) and self.core_snap.commit_sha is not None and self.core_snap.commit_sha!=core["commit"]:
+                self.error("deployment.core_commit_mismatch","<core-snapshot>",f"contract core.commit {core['commit']} != trusted snapshot provenance {self.core_snap.commit_sha} (deployment must pin the exact deployed commit)")
+        if self.instance_snap is not None and self.locator is not None:
+            exp=self.locator["instance"].get("repository_id")
+            if isinstance(exp,int) and self.instance_snap.repository_id!=exp:
+                self.error("deployment.instance_identity","<instance-snapshot>",f"resolved Instance repository ID {self.instance_snap.repository_id} != trusted locator expected {exp} (trust failure)")
+    def reuse_sub_surfaces(self):
+        # 复用（不复制）：validate_core 管 Core 契约，InstanceValidator 管
+        # Instance 契约；binding 由已校验 contract + locator 投影。
+        if self.core_snap is not None:
+            self.findings.extend(validate_core(self.core_snap.root))
+        if self.instance_snap is not None and self.core_snap is not None and self.locator is not None:
+            try:
+                binding=DeploymentBinding.from_contract(self.contract,self.locator)
+                self.findings.extend(InstanceValidator(self.instance_snap.root,self.core_snap.root,binding).run())
+            except (KeyError,TypeError,AttributeError):
+                self.error("deployment.binding_projection",self.contract_path.as_posix(),"deployment contract is too malformed to project a deployment binding")
+
+def validate_deployment(control_snapshot, deployed_core, instance_snapshot, trusted_locator):
+    """V0.4 split deployment validation surface:
+    validate_deployment(control_snapshot, deployed_core, instance_snapshot,
+    trusted_locator).
+
+    control_snapshot / deployed_core / instance_snapshot: RepositorySnapshot
+        objects — materialized trees plus CALLER-SUPPLIED trusted provenance
+        (repository_id, and for the deployed Core the exact pinned 40-hex
+        commit_sha). Self-declared identity inside repository content is
+        never trusted; missing provenance fails closed.
+    trusted_locator: the external trust root (dict or YAML file path) with
+        runtime_control.repository_id (+ optional canonical_ref/contract_path
+        and navigation names) and instance.repository_id. Navigation names
+        never participate in trust decisions.
+
+    Reuses validate_core() and validate_instance() instead of duplicating
+    them. Explicit non-goals: no resolve_repository(), no lookup_github(),
+    no fetch_live_deployment(), no check_platform_permissions() — those are
+    future resolver/runtime surfaces. Deterministic and offline; structural
+    privacy/ownership boundary enforcement, not complete secret detection.
+    """
+    return DeploymentValidator(control_snapshot,deployed_core,instance_snapshot,trusted_locator).run()
+
+TRUSTED_PROVENANCE_SECTIONS=("control","core","instance")
+TRUSTED_PROVENANCE_KEYS={"repository_id","commit_sha"}
+
+def load_trusted_provenance(path):
+    """Load and strictly validate the CLI's trusted snapshot provenance map."""
+    p=Path(path)
+    try:
+        text=p.read_text(encoding="utf-8")
+    except (OSError,UnicodeError) as e:
+        raise ValueError(f"cannot read file {p}: {e.__class__.__name__}") from None
+    try:
+        d=yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        raise ValueError(f"invalid YAML: {e.__class__.__name__}") from None
+    if not isinstance(d,dict):
+        raise ValueError("top-level must be a mapping")
+    unknown=[k for k in d if k not in TRUSTED_PROVENANCE_SECTIONS]
+    if unknown:
+        raise ValueError(f"unknown top-level keys {sorted(unknown,key=repr)!r}")
+    for sec in TRUSTED_PROVENANCE_SECTIONS:
+        if sec not in d:
+            raise ValueError(f"missing required section {sec!r}")
+        blk=d[sec]
+        if not isinstance(blk,dict):
+            raise ValueError(f"section {sec!r} must be a mapping")
+        extra=[k for k in blk if k not in TRUSTED_PROVENANCE_KEYS]
+        if extra:
+            raise ValueError(f"section {sec!r} has unknown keys {sorted(extra,key=repr)!r}")
+        if "repository_id" not in blk:
+            raise ValueError(f"section {sec!r} missing required repository_id")
+        rid=blk["repository_id"]
+        if not isinstance(rid,int) or isinstance(rid,bool) or rid<=0:
+            raise ValueError(f"section {sec!r}.repository_id must be a positive integer")
+        if sec=="core" and "commit_sha" not in blk:
+            raise ValueError("section 'core' missing required commit_sha")
+        if "commit_sha" in blk:
+            cc=blk["commit_sha"]
+            if not (isinstance(cc,str) and re.fullmatch(r"[0-9a-f]{40}",cc)):
+                raise ValueError(f"section {sec!r}.commit_sha must be an exact 40-lowercase-hex commit")
+    return d
+
+def main():
+    a=argparse.ArgumentParser(description="Learning OS deterministic validator")
+    a.add_argument("root",nargs="?",default=".")
+    a.add_argument("--core",action="store_true",help="validate a materialized V0.4 Core plane snapshot (validate_core surface)")
+    a.add_argument("--instance",action="store_true",help="validate a materialized V0.4 Instance plane snapshot (validate_instance surface)")
+    a.add_argument("--deployment",action="store_true",help="validate a V0.4 split deployment (validate_deployment surface; synthetic offline snapshots)")
+    a.add_argument("--core-snapshot",default=None,help="materialized Core snapshot required by --instance/--deployment")
+    a.add_argument("--deployment-binding",default=None,help="YAML file with the explicit trusted deployment binding required by --instance (synthetic fixture form)")
+    a.add_argument("--control-snapshot",default=None,help="materialized Runtime-Control snapshot root required by --deployment")
+    a.add_argument("--instance-snapshot",default=None,help="materialized Instance snapshot root required by --deployment")
+    a.add_argument("--locator",default=None,help="YAML file with the trusted locator (external trust root) required by --deployment")
+    a.add_argument("--provenance",default=None,help="YAML file with caller-supplied trusted snapshot provenance (control/core/instance repository_id[/commit_sha]) required by --deployment")
+    args=a.parse_args(); root=Path(args.root)
+    if args.deployment:
+        need={"--control-snapshot":args.control_snapshot,"--core-snapshot":args.core_snapshot,"--instance-snapshot":args.instance_snapshot,"--locator":args.locator,"--provenance":args.provenance}
+        missing=[k for k,v in need.items() if not v]
+        if missing: a.error(f"--deployment requires {' '.join(missing)}")
+        try: prov=load_trusted_provenance(args.provenance)
+        except ValueError as e: a.error(f"invalid --provenance: {e}")
+        snaps={}
+        for sec,root_key in (("control",args.control_snapshot),("core",args.core_snapshot),("instance",args.instance_snapshot)):
+            blk=prov[sec]
+            try:
+                snaps[sec]=RepositorySnapshot(root_key,blk["repository_id"],blk.get("commit_sha"))
+            except ValueError as e: a.error(f"invalid --provenance {sec}: {e}")
+        findings=validate_deployment(snaps.get("control"),snaps.get("core"),snaps.get("instance"),args.locator); label="Deployment (offline snapshots)"
+    elif args.instance:
+        if not args.core_snapshot or not args.deployment_binding: a.error("--instance requires --core-snapshot and --deployment-binding")
+        findings=validate_instance(root,args.core_snapshot,args.deployment_binding); label="Instance snapshot"
+    elif args.core:
+        findings=validate_core(root); label="Core snapshot"
+    else:
+        v=Validator(root); findings=v.run(); label=f"{len(v.docs)} canonical YAML documents"
+    for x in findings: print(x.render())
+    e=[x for x in findings if x.severity=="error"]; print(f"validated {label}: {len(e)} error(s)"); return 1 if e else 0
+if __name__=="__main__":raise SystemExit(main())

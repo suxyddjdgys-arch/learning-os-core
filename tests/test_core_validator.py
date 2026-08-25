@@ -290,6 +290,15 @@ class CoreValidatorTests(unittest.TestCase):
         (root / "protocol/link.route").symlink_to(outside)
         self.assertIn("core.protocol_route", core_errors(root))
 
+    def test_fail_protocol_route_symlink_directory_component(self):
+        root = self.make_snapshot(config=core_config(protocol={"runtime_core": "protocol/linked/outside.route"}))
+        td = tempfile.TemporaryDirectory(dir=root.parent, prefix="s2a-outside-dir-")
+        self.addCleanup(td.cleanup)
+        outside_dir = Path(td.name)
+        (outside_dir / "outside.route").write_text("outside\n", encoding="utf-8")
+        (root / "protocol/linked").symlink_to(outside_dir, target_is_directory=True)
+        self.assertIn("core.protocol_route", core_errors(root))
+
     def test_fail_unrouted_protocol_document(self):
         root = self.make_snapshot()
         write_file(root, "protocol/orphan.md", "# unrouted\n")

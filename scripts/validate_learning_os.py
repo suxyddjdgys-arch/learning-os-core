@@ -18,6 +18,19 @@ LEGACY_CANONICAL_DOCUMENT_TYPES={
     "branch_registry","branch_runtime","branch_report","coordination_event",
     "hub_runtime","topic_report","learning_handoff","evidence",
 }
+# Current production legacy V0.3 schema-version compatibility, compiled from
+# production protocol/schema.md §2.1. No fallback/wildcard exists; the V0.4
+# split Instance state schema axis is deliberately separate.
+LEGACY_SCHEMA_VERSIONS={
+    "project_config":{"0.3"},"conversation_sequence_registry":{"0.3"},"lineage_control":{"0.3"},
+    "learner_background":{"0.1"},"learner_model":{"0.1"},"learner_calibration":{"0.1"},"learner_costs":{"0.1"},
+    "learner_execution":{"0.3"},"learner_knowledge":{"0.3"},"curriculum":{"0.1"},
+    "topic_goal":{"0.3"},"topic_plan":{"0.3"},"topic_progress":{"0.3"},"topic_deferred":{"0.3"},
+    "subtopic_definition":{"0.3"},"subtopic_plan":{"0.3"},"subtopic_progress":{"0.3"},
+    "weekly_execution":{"0.3"},"daily_execution":{"0.3"},"execution_session":{"0.3"},
+    "branch_registry":{"0.3"},"branch_runtime":{"0.3"},"branch_report":{"0.3"},"coordination_event":{"0.3"},
+    "hub_runtime":{"0.3"},"topic_report":{"0.3"},"learning_handoff":{"0.3"},"evidence":{"0.3"},
+}
 PLANNED={"planned","in_progress","completed","blocked","deferred","dropped"}; CONF={"low","medium","high"}
 CAP={"provisional","supported","conflicted","unsupported"}; EDIR={"support","challenge","neutral","deferred"}
 GEN={"active","idle","handoff_pending","archived","deprecated"}; BROLE={"hub","main","practice","deep_dive"}; BLIFE={"active","idle","retired"}
@@ -66,7 +79,7 @@ def resolve_repository_relative_file(snapshot_root:Path,ref):
     return resolved,None,None
 
 class Validator:
-    def __init__(self,root:Path): self.root=root.resolve(); self.docs={}; self.findings=[]; self.evidence=set(); self.curricula={}
+    def __init__(self,root:Path): self.root=root.resolve(); self.docs={}; self.findings=[]; self.evidence=set(); self.curricula={}; self.schema_blocked=set()
     def error(self,c,p,m): self.findings.append(Finding("error",c,p,m))
     def enum(self,p,f,v,a):
         if v not in a: self.error("enum.invalid",p,f"{f}={v!r} not in {sorted(a)}")
@@ -100,6 +113,12 @@ class Validator:
                 self.error("yaml.document_type_invalid",p,f"document_type must be a non-empty, non-whitespace string; found {t!r}");continue
             if t not in LEGACY_CANONICAL_DOCUMENT_TYPES:
                 self.error("yaml.document_type_unknown",p,f"unknown/noncanonical document_type {t!r}");continue
+            if "schema_version" in d:
+                v=d["schema_version"]
+                if not isinstance(v,str) or not v.strip():
+                    self.error("yaml.schema_version_invalid",p,f"schema_version must be a non-empty, non-whitespace string; found {v!r}");self.schema_blocked.add(p);continue
+                if v not in LEGACY_SCHEMA_VERSIONS[t]:
+                    self.error("yaml.schema_version_unsupported",p,f"document_type {t!r} schema_version {v!r} is unsupported; accepted versions are {sorted(LEGACY_SCHEMA_VERSIONS[t])}");self.schema_blocked.add(p);continue
             e=self.expected(p)
             if e and t!=e:self.error("path.document_type",p,f"expected {e}, found {t}")
             for k in req.get(t,()):
@@ -137,6 +156,7 @@ class Validator:
                         if isinstance(x,dict) and "status" in x:self.enum(p,f"{s}.{x.get('id')}.status",x.get("status"),PLANNED)
     def refs(self):
         for p,d in self.docs.items():
+            if p in self.schema_blocked:continue
             t=d.get("document_type")
             if t=="topic_progress":
                 q=self.docs.get(f"topics/{d.get('topic')}/plan.yaml")
@@ -168,7 +188,7 @@ class Validator:
     def prod(s):return s in {"learning_os","learning_hub","model_review"} or bool(re.fullmatch(r"(?:topic_hub:[^:]+|learning_(?:main|practice|deep_dive):[^:]+:[^:]+)",s))
     def sequence(self):
         p="runtime/ui/conversation-sequences.yaml";d=self.docs.get(p)
-        if not d:return
+        if not d or p in self.schema_blocked:return
         scopes=d.get("scopes")or{};np=False
         for s,x in scopes.items():
             if not isinstance(x,dict):self.error("sequence.scope_record",p,s);continue
@@ -189,6 +209,7 @@ class Validator:
             if isinstance(cur,int) and cur<b:self.error("sequence.repair_current",p,str(i))
     def authority(self):
         for p,d in self.docs.items():
+            if p in self.schema_blocked:continue
             t=d.get("document_type")
             if t=="lineage_control":
                 a=d.get("active_generation");i=(d.get("bootstrap")or{}).get("initial_generation")
@@ -220,6 +241,7 @@ class Validator:
                     if ref and not (self.root/ref).exists():self.error("branch.handoff_ref",p,ref)
     def weekly(self):
         for p,d in self.docs.items():
+            if p in self.schema_blocked:continue
             if d.get("document_type")!="weekly_execution" or d.get("current_outcomes") is None or d.get("closing") is not None:continue
             x=d.get("projection")
             if not isinstance(x,dict):self.error("weekly.projection",p,"open current_outcomes require provenance");continue

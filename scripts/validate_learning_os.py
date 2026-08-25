@@ -379,17 +379,25 @@ def validate_core(core_snapshot):
 INSTANCE_SCHEMA="0.4"
 INSTANCE_ALLOWED_TOP={"config","learner","topics","evidence","execution","runtime","curriculum"}
 INSTANCE_ALLOWED_FILES={"README.md",".gitignore","LICENSE"}
+# Core 拥有的顶层内容出现在 Instance 快照中即视为越界（fail closed）。
 INSTANCE_CORE_TOP={"protocol":"Core-owned reusable protocol","scripts":"Core-owned validator implementation","tests":"Core-owned tests and fixtures","domains":"Core-owned reusable domain bases","docs":"Core/handoff/acceptance documentation",".github":"Core CI configuration","coordination":"legacy coordination plane outside Instance ownership"}
 INSTANCE_CONFIG_FORBIDDEN={"core.yaml":"Core plane contract","project.yaml":"legacy instance-authoritative project configuration","project-instructions.md":"instance-local legacy instructions","project-ui-bootstrap.md":"instance-local legacy UI bootstrap","deployment.yaml":"Runtime-Control deployment binding (B2-C)"}
+# Instance 中被拒绝的 Instance/Control 之外的 plane 文档类型
 INSTANCE_FORBIDDEN_DOC_TYPES={"lineage_control":"private project-design Control lineage","project_config":"legacy canonical project configuration","deployment_binding":"Runtime-Control deployment binding","migration_transaction":"Control migration transaction","core_config":"Core plane contract document"}
 INSTANCE_STATE_TYPES={"learner_background","learner_model","learner_calibration","learner_costs","learner_execution","learner_knowledge","topic_goal","topic_plan","topic_progress","topic_deferred","subtopic_definition","subtopic_plan","subtopic_progress","evidence","weekly_execution","daily_execution","execution_session","branch_registry","branch_runtime","learning_handoff","topic_report","branch_report","hub_runtime","coordination_event","conversation_sequence_registry"}
 INSTANCE_CONTRACT_TYPES={"instance_config","curriculum_extension"}
 INSTANCE_CURRICULUM_TYPES={"curriculum"}
 INSTANCE_ALL_TYPES=INSTANCE_STATE_TYPES|INSTANCE_CONTRACT_TYPES|INSTANCE_CURRICULUM_TYPES
+# instance.yaml 不得重定义 Core 拥有的契约区块（Core semantic override 拒绝）
 INSTANCE_CONFIG_CORE_SECTIONS={"chat_routing","protocol","domains","governance","bootstrap","manifest","runtime","time"}
+# Control/deployment authority 与 credential 键：Instance 任何文档禁止
 INSTANCE_FORBIDDEN_KEYS={"deployment_epoch","active_deployment","write_state","active_deployed_commit","deployed_commit","deployed_core_commit","deployment_binding","migration_authorized","migration_authorization","lineage_control","repository_id","repository_full_name","instance_repository_id","instance_repository_full_name","core_repository_id","runtime_control_repository_id","control_locator","bootstrap_locator","secret","secrets","token","tokens","password","api_key","api_token","private_key","credential","credentials"}
+# 学习 lineage 字段仅允许出现在 branch_runtime（学习 lineage 归 Instance；project-design lineage 归 Control）
 INSTANCE_LINEAGE_KEYS={"active_generation","pending_handoff"}
+# Instance 内部物理引用只允许落在 Instance 自有 plane 内
 INSTANCE_REF_PREFIXES=("learner/","topics/","evidence/","execution/","curriculum/","runtime/ui/")
+# 唯一的 binding schema（B2-B 定义；B2-C 仅归一术语，不改键集）。
+# context_type 键仅属于 synthetic fixture 形态；contract 投影形态不带该键。
 DEPLOYMENT_BINDING_KEYS={"context_type","core_repository_id","core_commit","instance_repository_id","topology","epoch","write_state"}
 
 class RepositorySnapshot:
@@ -421,6 +429,7 @@ class DeploymentBinding:
     """
     __slots__=("form","fields","source")
     def __init__(self,source):
+        # source: dict | YAML path（synthetic 形态）
         self.form="synthetic"; self.source=source; self.fields=None
     @classmethod
     def from_contract(cls,contract,locator):
@@ -455,6 +464,7 @@ class InstanceValidator:
         return self.findings
     @staticmethod
     def instance_expected(p):
+        # 与 legacy expected() 相同的 Instance-plane 路径分类，另加 V0.4 curriculum 路径
         exact={"config/instance.yaml":"instance_config","runtime/ui/conversation-sequences.yaml":"conversation_sequence_registry","learner/background.yaml":"learner_background","learner/model.yaml":"learner_model","learner/calibration.yaml":"learner_calibration","learner/costs.yaml":"learner_costs","learner/execution.yaml":"learner_execution"}
         if p in exact:return exact[p]
         pats=[(r"learner/knowledge/[^/]+\.yaml","learner_knowledge"),(r"curriculum/extensions/[^/]+\.yaml","curriculum_extension"),(r"curriculum/local/[^/]+/curriculum\.yaml","curriculum"),(r"evidence/[^/]+\.yaml","evidence"),(r"execution/weekly/[^/]+\.yaml","weekly_execution"),(r"topics/[^/]+/goal\.yaml","topic_goal"),(r"topics/[^/]+/plan\.yaml","topic_plan"),(r"topics/[^/]+/progress\.yaml","topic_progress"),(r"topics/[^/]+/deferred\.yaml","topic_deferred"),(r"topics/[^/]+/subtopics/[^/]+/definition\.yaml","subtopic_definition"),(r"topics/[^/]+/subtopics/[^/]+/plan\.yaml","subtopic_plan"),(r"topics/[^/]+/subtopics/[^/]+/progress\.yaml","subtopic_progress"),(r"topics/[^/]+/coordination/branches\.yaml","branch_registry"),(r"topics/[^/]+/coordination/branches/[^/]+/runtime\.yaml","branch_runtime"),(r"topics/[^/]+/execution/sessions/[^/]+\.yaml","execution_session"),(r"topics/[^/]+/subtopics/[^/]+/handoffs/[^/]+/[^/]+\.yaml","learning_handoff")]
@@ -488,6 +498,9 @@ class InstanceValidator:
                 if d["id"] in self.evidence:self.error("evidence.duplicate_id",p,d["id"])
                 self.evidence.add(d["id"])
     def load_binding(self):
+        # 显式 trusted deployment binding：synthetic 形态（唯一 fixture
+        # schema，未知键一律拒绝）或 contract 投影形态（键集由
+        # DeploymentValidator 校验，此处仅复核字段格式）。fail closed。
         b=self.deployment_binding
         if b is None: self.error("instance.deployment_binding","<deployment-binding>","trusted deployment binding is required (fail closed)"); return
         if isinstance(b,DeploymentBinding):
@@ -502,6 +515,7 @@ class InstanceValidator:
                     except Exception as e:self.error("instance.deployment_binding",str(src),str(e)); return
             else: self.error("instance.deployment_binding","<deployment-binding>","unsupported binding form"); return
         else:
+            # 兼容直接传 dict / YAML path 的调用方式（视作 synthetic 形态）
             d=b; skip_synthetic_keys=False
             if not isinstance(d,dict):
                 p=Path(d)
@@ -526,6 +540,8 @@ class InstanceValidator:
         ep=d.get("epoch")
         if not isinstance(ep,int) or isinstance(ep,bool) or ep<1: self.error("instance.deployment_binding_epoch","<deployment-binding>:epoch","must be a positive integer")
     def load_core(self):
+        # deployed_core 是本地物化的 Core 快照（trusted context pin 的 exact commit 检出）。
+        # 仅从快照读取 manifest 与 domain bases；不做 GitHub 在线发现。
         if self.core_root is None or not self.core_root.is_dir(): self.error("instance.core_snapshot","<core-snapshot>","deployed Core snapshot is required (fail closed)"); return
         cc=self.core_root/"config/core.yaml"
         if not cc.is_file(): self.error("instance.core_config","config/core.yaml","Core snapshot is missing config/core.yaml (fail closed)"); return
@@ -561,6 +577,7 @@ class InstanceValidator:
             t=d.get("document_type")
             if t is None: self.error("yaml.document_type",p,"missing document_type"); continue
             if t in INSTANCE_FORBIDDEN_DOC_TYPES: self.error("instance.forbidden_document",p,f"{INSTANCE_FORBIDDEN_DOC_TYPES.get(t,'forbidden')} is not Instance-plane material")
+                # still fall through to key scan for defense in depth
             elif t not in INSTANCE_ALL_TYPES: self.error("instance.unknown_document_type",p,f"unknown Instance document type {t!r}")
             e=self.instance_expected(p)
             if e and t!=e: self.error("path.document_type",p,f"expected {e}, found {t}")
@@ -574,6 +591,8 @@ class InstanceValidator:
             if CORE_TOKEN_RE.search(f.read_text(encoding="utf-8")):
                 self.error("instance.credential_value",f.relative_to(self.root).as_posix(),"structurally detected credential/token value in document text")
     def build_curricula(self):
+        # deterministic resolution order: Instance local domains -> Core bases
+        # -> extensions merged additively (collisions fail closed)
         ldir=self.root/"curriculum/local"
         if ldir.is_dir():
             for f in sorted(ldir.glob("*/curriculum.yaml")):
@@ -593,6 +612,8 @@ class InstanceValidator:
                 if d is None: continue
                 self.apply_extension(p,d)
     def apply_extension(self,p,d):
+        # extension 语义：additive-only。任何对 Core base 对象的重定义/删除/
+        # 别名重定向/capability 覆盖均 fail closed。
         dom=d.get("domain"); base=self.core_bases.get(dom) if isinstance(dom,str) else None
         if not isinstance(dom,str) or not dom: self.error("instance.extension_domain",p,"extension requires a domain"); return
         if base is None: self.error("instance.extension_base",p,f"extension domain {dom!r} has no Core base"); return
@@ -670,6 +691,8 @@ class InstanceValidator:
                     for x in d.get(s)or[]:
                         if isinstance(x,dict) and "status" in x:self.enum(p,f"{s}.{x.get('id')}.status",x.get("status"),PLANNED)
     def refs(self):
+        # 与 legacy refs() 相同的语义检查，但 curriculum 解析针对
+        # effective view（Core base + Instance extension 合并视图）。
         for p,d in self.docs.items():
             t=d.get("document_type")
             if t=="topic_progress":
@@ -720,6 +743,8 @@ class InstanceValidator:
             cur=(scopes.get(r.get("scope"))or{}).get("last_allocated")
             if isinstance(cur,int) and cur<b:self.error("sequence.repair_current",p,str(i))
     def check_instance_ref(self,p,ref,field,require_exists=True):
+        # Instance 内部物理引用规则：必须相对路径、禁止 ../ 穿越、禁止绝对
+        # 路径、只能落在 Instance 自有 plane 内（cross-plane 引用 fail closed）。
         if not isinstance(ref,str) or not ref.strip(): self.error("instance.ref_invalid",f"{p}:{field}",repr(ref)); return False
         if ref.startswith(("/","~")) or re.match(r"^[A-Za-z]:[\\/]",ref): self.error("instance.ref_absolute",f"{p}:{field}",ref); return False
         if ".." in ref.split("/"): self.error("instance.ref_traversal",f"{p}:{field}",ref); return False
@@ -727,6 +752,8 @@ class InstanceValidator:
         if require_exists and not (self.root/ref).is_file(): self.error("instance.ref_missing",f"{p}:{field}",ref); return False
         return True
     def authority(self):
+        # Instance 只校验学习 lineage（branch_runtime）；project-design
+        # lineage（lineage_control）已在 check_documents 中被拒绝。
         for p,d in self.docs.items():
             if d.get("document_type")!="branch_runtime": continue
             a=d.get("active_generation");g=d.get("generations")or{};r=g.get(a,g.get(str(a))) if isinstance(a,int) else None
@@ -753,11 +780,15 @@ class InstanceValidator:
             if not isinstance(src,list) or not src:self.error("weekly.projection_sources",p,"missing sources");continue
             for s in src:
                 if not isinstance(s,dict) or not s.get("ref") or not isinstance(s.get("revision"),int):self.error("weekly.projection_source",p,"invalid source");continue
+                # source ref 必须严格落在 Instance root 内且属于 Instance plane
                 if not self.check_instance_ref(p,s["ref"],"source_revisions.ref",require_exists=False):continue
                 q=self.docs.get(s["ref"])
                 if q is None:self.error("weekly.projection_source_missing",p,s["ref"])
                 elif isinstance(q.get("revision"),int) and s["revision"]>q["revision"]:self.error("weekly.projection_source_future",p,s["ref"])
     def provenance(self):
+        # Plan provenance：legacy form（curriculum_version）与 new form
+        # （base_version + extension_revision）同时接受；同一条目同时出现
+        # 两种字段 = ambiguous = fail closed。不迁移任何 production Plan。
         for p,d in self.docs.items():
             if d.get("document_type")!="topic_plan": continue
             cur=((d.get("plan")or{}).get("based_on")or{}).get("curricula")
@@ -800,12 +831,26 @@ def validate_instance(instance_snapshot, deployed_core, deployment_binding):
     Deterministic and offline. Fail-closed privacy/ownership boundary
     enforcement for the Instance plane, not complete secret detection.
     """
+    # 显式类型判断（Path.root 是 "/"，不能用 getattr 识别 RepositorySnapshot）
     iroot=instance_snapshot.root if isinstance(instance_snapshot,RepositorySnapshot) else instance_snapshot
     croot=deployed_core.root if isinstance(deployed_core,RepositorySnapshot) else deployed_core
     return InstanceValidator(Path(iroot),croot,deployment_binding).run()
 
+# ===== V0.4 Deployment plane surface (authorized V0.4-B2-C) =====
+# validate_deployment(control_snapshot, deployed_core, instance_snapshot,
+# trusted_locator) is the split deployment validation surface. Deterministic
+# and offline: it never resolves repositories, never contacts GitHub, never
+# fetches live deployment state and never checks platform permissions
+# (no resolve_repository / lookup_github / fetch_live_deployment /
+# check_platform_permissions — those belong to a future resolver/runtime
+# surface). Snapshot provenance is CALLER-SUPPLIED trusted resolver output;
+# self-declared identity inside any repository content is never trusted.
+
 DEPLOYMENT_SCHEMA="0.4"
 DEPLOYMENT_DOC_TYPE="deployment_binding"
+# public Runtime-Control deployment contract allowlist（fail closed：allowlist
+# 外任何键都拒绝；Instance identity / lineage / migration / credentials
+# 属于被禁的信任边界内容，见 DEPLOYMENT_TRUST_BOUNDARY_KEYS）
 DEPLOYMENT_TOP_KEYS={"schema_version","document_type","updated_at","deployment","core"}
 DEPLOYMENT_SECTION_KEYS={"deployment":{"id","topology","epoch","write_state"},"core":{"repository_id","commit","repository_full_name"}}
 DEPLOYMENT_REQUIRED={"deployment":{"id","topology","epoch","write_state"},"core":{"repository_id","commit"}}
@@ -831,13 +876,18 @@ DEPLOYMENT_TRUST_BOUNDARY_KEYS={
     "api_token":"credentials are forbidden in the public contract","private_key":"credentials are forbidden in the public contract",
     "credential":"credentials are forbidden in the public contract","credentials":"credentials are forbidden in the public contract",
 }
+# 外部 trusted locator 契约（TRUST ROOT；navigation 字段不参与信任判断）
 LOCATOR_TOP_KEYS={"runtime_control","instance"}
 LOCATOR_RC_KEYS={"repository_id","repository","canonical_ref","contract_path"}
 LOCATOR_INSTANCE_KEYS={"repository_id","repository"}
 
 class DeploymentValidator:
     """Deterministic validate_deployment(control_snapshot, deployed_core,
-    instance_snapshot, trusted_locator) surface for the V0.4 split planes."""
+    instance_snapshot, trusted_locator) surface for the V0.4 split planes.
+
+    复用 validate_core() 与 validate_instance()（经 InstanceValidator），
+    不复制其逻辑；本面只新增 deployment contract 结构/身份/信任边界检查。
+    """
     def __init__(self,control,core,instance,locator):
         self.control=control; self.core=core; self.instance=instance; self.locator_source=locator
         self.findings=[]
@@ -848,6 +898,7 @@ class DeploymentValidator:
         self.check_contract_structure(); self.check_trust_boundary()
         self.check_identity(); self.reuse_sub_surfaces()
         return self.findings
+    # --- snapshots：必须是携带 trusted provenance 的 RepositorySnapshot ---
     def resolve_snapshots(self):
         self.control_snap=self.core_snap=self.instance_snap=None
         for label,v in (("control",self.control),("core",self.core),("instance",self.instance)):
@@ -860,6 +911,7 @@ class DeploymentValidator:
         self.instance_snap=self.instance if isinstance(self.instance,RepositorySnapshot) else None
         if self.core_snap is not None and self.core_snap.commit_sha is None:
             self.error("deployment.core_provenance","<core-snapshot>","deployed Core snapshot provenance requires the exact pinned commit_sha (fail closed)")
+    # --- trusted locator：唯一的外部信任根 ---
     def load_locator(self):
         self.locator=None
         src=self.locator_source
@@ -887,6 +939,7 @@ class DeploymentValidator:
         if "contract_path" not in rc: rc=dict(rc,contract_path="deployment.yaml")
         if "canonical_ref" not in rc: rc=dict(rc,canonical_ref="main")
         self.locator={"runtime_control":rc,"instance":inst}
+    # --- deployment contract：结构化 allowlist + fail closed ---
     def load_contract(self):
         self.contract=None; self.contract_path=None
         if self.locator is None or not isinstance(self.locator.get("runtime_control"),dict): return
@@ -932,6 +985,7 @@ class DeploymentValidator:
         fn=core.get("repository_full_name")
         if fn is not None and not (isinstance(fn,str) and fn.strip()): self.error("deployment.core_navigation",f"{p}:core.repository_full_name","optional navigation metadata must be a non-empty string")
     def check_trust_boundary(self):
+        # 公开 contract 的信任边界：递归扫描禁键 + 结构化 token 值检测
         p=self.contract_path.as_posix()
         def walk(x,path):
             if isinstance(x,dict):
@@ -947,6 +1001,8 @@ class DeploymentValidator:
         if CORE_TOKEN_RE.search(self.contract_path.read_text(encoding="utf-8")):
             self.error("deployment.credential_value",p,"structurally detected credential/token value in contract text")
     def check_identity(self):
+        # 身份相等性：locator（TRUST ROOT）与 snapshot provenance（trusted
+        # resolver output）双向核对；owner/name 永不参与判断。
         p=self.contract_path.as_posix(); d=self.contract
         if self.control_snap is not None and self.locator is not None:
             exp=self.locator["runtime_control"].get("repository_id")
@@ -964,6 +1020,8 @@ class DeploymentValidator:
             if isinstance(exp,int) and self.instance_snap.repository_id!=exp:
                 self.error("deployment.instance_identity","<instance-snapshot>",f"resolved Instance repository ID {self.instance_snap.repository_id} != trusted locator expected {exp} (trust failure)")
     def reuse_sub_surfaces(self):
+        # 复用（不复制）：validate_core 管 Core 契约，InstanceValidator 管
+        # Instance 契约；binding 由已校验 contract + locator 投影。
         if self.core_snap is not None:
             self.findings.extend(validate_core(self.core_snap.root))
         if self.instance_snap is not None and self.core_snap is not None and self.locator is not None:

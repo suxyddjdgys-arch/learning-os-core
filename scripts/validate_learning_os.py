@@ -149,7 +149,7 @@ class Validator:
                 if q and isinstance(r,int) and r>q.get("revision",r):self.error("revision.topic_plan_goal_future",p,"goal_revision points to future revision")
             elif t=="subtopic_plan":
                 q=self.docs.get(f"topics/{d.get('topic')}/plan.yaml");r=((d.get("plan")or{}).get("based_on")or{}).get("topic_plan_revision")
-                if q and isinstance(r,int) and r>q.get("revision",r):self.error("revision.subtopic_plan_topic_future",p,"goal_revision points to future revision")
+                if q and isinstance(r,int) and r>q.get("revision",r):self.error("revision.subtopic_plan_topic_future",p,"topic_plan_revision points to future revision")
                 for m in (d.get("plan")or{}).get("milestones")or[]:
                     for r in (m or{}).get("curriculum_refs")or[]:
                         if not isinstance(r,dict) or r.get("type")!="curriculum_node":continue
@@ -674,7 +674,7 @@ class InstanceValidator:
             if t not in INSTANCE_ALL_TYPES: continue
             for k in req.get(t,()):
                 if k not in d:self.error("document.required",p,f"missing {k}")
-            if t=="topic_plan":self.enum(p,"plan.status",(d.get("plan")or{}).get("status"),{"provisional","active","paused"})
+            if t=="topic_plan":self.enum(p,"plan.status",(d.get("plan")or{}).get("status"),{"awaiting_intake","provisional","active","paused"})
             elif t=="topic_progress":
                 self.enum(p,"lifecycle",d.get("lifecycle"),TLIFE)
                 for k,x in (d.get("milestones")or{}).items():

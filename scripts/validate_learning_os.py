@@ -1054,6 +1054,47 @@ def validate_deployment(control_snapshot, deployed_core, instance_snapshot, trus
     """
     return DeploymentValidator(control_snapshot,deployed_core,instance_snapshot,trusted_locator).run()
 
+TRUSTED_PROVENANCE_SECTIONS=("control","core","instance")
+TRUSTED_PROVENANCE_KEYS={"repository_id","commit_sha"}
+
+def load_trusted_provenance(path):
+    """Load and strictly validate the CLI's trusted snapshot provenance map."""
+    p=Path(path)
+    try:
+        text=p.read_text(encoding="utf-8")
+    except (OSError,UnicodeError) as e:
+        raise ValueError(f"cannot read file {p}: {e.__class__.__name__}") from None
+    try:
+        d=yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        raise ValueError(f"invalid YAML: {e.__class__.__name__}") from None
+    if not isinstance(d,dict):
+        raise ValueError("top-level must be a mapping")
+    unknown=[k for k in d if k not in TRUSTED_PROVENANCE_SECTIONS]
+    if unknown:
+        raise ValueError(f"unknown top-level keys {sorted(unknown,key=repr)!r}")
+    for sec in TRUSTED_PROVENANCE_SECTIONS:
+        if sec not in d:
+            raise ValueError(f"missing required section {sec!r}")
+        blk=d[sec]
+        if not isinstance(blk,dict):
+            raise ValueError(f"section {sec!r} must be a mapping")
+        extra=[k for k in blk if k not in TRUSTED_PROVENANCE_KEYS]
+        if extra:
+            raise ValueError(f"section {sec!r} has unknown keys {sorted(extra,key=repr)!r}")
+        if "repository_id" not in blk:
+            raise ValueError(f"section {sec!r} missing required repository_id")
+        rid=blk["repository_id"]
+        if not isinstance(rid,int) or isinstance(rid,bool) or rid<=0:
+            raise ValueError(f"section {sec!r}.repository_id must be a positive integer")
+        if sec=="core" and "commit_sha" not in blk:
+            raise ValueError("section 'core' missing required commit_sha")
+        if "commit_sha" in blk:
+            cc=blk["commit_sha"]
+            if not (isinstance(cc,str) and re.fullmatch(r"[0-9a-f]{40}",cc)):
+                raise ValueError(f"section {sec!r}.commit_sha must be an exact 40-lowercase-hex commit")
+    return d
+
 def main():
     a=argparse.ArgumentParser(description="Learning OS deterministic validator")
     a.add_argument("root",nargs="?",default=".")
@@ -1071,13 +1112,14 @@ def main():
         need={"--control-snapshot":args.control_snapshot,"--core-snapshot":args.core_snapshot,"--instance-snapshot":args.instance_snapshot,"--locator":args.locator,"--provenance":args.provenance}
         missing=[k for k,v in need.items() if not v]
         if missing: a.error(f"--deployment requires {' '.join(missing)}")
-        prov=yaml.safe_load(Path(args.provenance).read_text(encoding="utf-8"))
+        try: prov=load_trusted_provenance(args.provenance)
+        except ValueError as e: a.error(f"invalid --provenance: {e}")
         snaps={}
         for sec,root_key in (("control",args.control_snapshot),("core",args.core_snapshot),("instance",args.instance_snapshot)):
-            blk=(prov or {}).get(sec) or {}
+            blk=prov[sec]
             try:
-                snaps[sec]=RepositorySnapshot(root_key,blk.get("repository_id"),blk.get("commit_sha"))
-            except ValueError as e: a.error(f"invalid provenance for {sec}: {e}")
+                snaps[sec]=RepositorySnapshot(root_key,blk["repository_id"],blk.get("commit_sha"))
+            except ValueError as e: a.error(f"invalid --provenance {sec}: {e}")
         findings=validate_deployment(snaps.get("control"),snaps.get("core"),snaps.get("instance"),args.locator); label="Deployment (offline snapshots)"
     elif args.instance:
         if not args.core_snapshot or not args.deployment_binding: a.error("--instance requires --core-snapshot and --deployment-binding")

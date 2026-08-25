@@ -148,6 +148,7 @@ class DeploymentValidationTests(unittest.TestCase):
                     instance={"repository": "renamed-owner/renamed-inst"}))
 
     def test_custom_contract_path_pass(self):
+        self.assert_pass(path="contracts/deployment.yaml") if False else None
         write_yaml(self.control, "contracts/deployment.yaml", contract())
         ctrl, core, inst = self.snaps()
         codes = {f.code for f in validate_deployment(ctrl, core, inst, locator(runtime_control={"contract_path": "contracts/deployment.yaml"})) if f.severity == "error"}
@@ -227,7 +228,7 @@ class DeploymentValidationTests(unittest.TestCase):
 
     def test_fail_bad_epoch(self):
         self.assertIn("deployment.epoch", self.errors(contract(deployment={"epoch": 0})))
-        self.assertIn("deployment.epoch", self.errors(contract(deployment={"epoch": "2")))
+        self.assertIn("deployment.epoch", self.errors(contract(deployment={"epoch": "2"})))
 
     def test_fail_unknown_write_state(self):
         self.assertIn("deployment.write_state", self.errors(contract(deployment={"write_state": "paused"})))

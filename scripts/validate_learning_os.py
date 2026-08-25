@@ -7,6 +7,17 @@ from pathlib import Path
 import yaml
 
 ROOTS={"config","runtime","learner","domains","topics","execution","coordination","evidence"}
+# Current production-style V0.3 canonical YAML document types. Historical
+# V0.2 learner-project types and V0.4 split-plane contract types are excluded.
+LEGACY_CANONICAL_DOCUMENT_TYPES={
+    "project_config","conversation_sequence_registry","lineage_control",
+    "learner_background","learner_model","learner_calibration","learner_costs",
+    "learner_execution","learner_knowledge","curriculum","topic_goal","topic_plan",
+    "topic_progress","topic_deferred","subtopic_definition","subtopic_plan",
+    "subtopic_progress","weekly_execution","daily_execution","execution_session",
+    "branch_registry","branch_runtime","branch_report","coordination_event",
+    "hub_runtime","topic_report","learning_handoff","evidence",
+}
 PLANNED={"planned","in_progress","completed","blocked","deferred","dropped"}; CONF={"low","medium","high"}
 CAP={"provisional","supported","conflicted","unsupported"}; EDIR={"support","challenge","neutral","deferred"}
 GEN={"active","idle","handoff_pending","archived","deprecated"}; BROLE={"hub","main","practice","deep_dive"}; BLIFE={"active","idle","retired"}
@@ -84,11 +95,15 @@ class Validator:
         for p,d in self.docs.items():
             if "schema_version" not in d:self.error("yaml.schema_version",p,"missing schema_version")
             if "document_type" not in d:self.error("yaml.document_type",p,"missing document_type");continue
-            e=self.expected(p)
-            if e and d["document_type"]!=e:self.error("path.document_type",p,f"expected {e}, found {d['document_type']}")
-            for k in req.get(d["document_type"],()):
-                if k not in d:self.error("document.required",p,f"missing {k}")
             t=d["document_type"]
+            if not isinstance(t,str) or not t.strip():
+                self.error("yaml.document_type_invalid",p,f"document_type must be a non-empty, non-whitespace string; found {t!r}");continue
+            if t not in LEGACY_CANONICAL_DOCUMENT_TYPES:
+                self.error("yaml.document_type_unknown",p,f"unknown/noncanonical document_type {t!r}");continue
+            e=self.expected(p)
+            if e and t!=e:self.error("path.document_type",p,f"expected {e}, found {t}")
+            for k in req.get(t,()):
+                if k not in d:self.error("document.required",p,f"missing {k}")
             if t=="topic_plan":self.enum(p,"plan.status",(d.get("plan")or{}).get("status"),{"awaiting_intake","provisional","active","paused"})
             elif t=="topic_progress":
                 self.enum(p,"lifecycle",d.get("lifecycle"),TLIFE)

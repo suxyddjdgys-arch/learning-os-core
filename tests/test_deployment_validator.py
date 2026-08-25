@@ -131,6 +131,50 @@ class DeploymentValidationTests(unittest.TestCase):
         codes = self.errors(c, loc, **kw)
         self.assertEqual(set(), codes)
 
+    def valid_cli_provenance(self) -> dict:
+        return {
+            "control": {"repository_id": RC_ID},
+            "core": {"repository_id": CORE_ID, "commit_sha": COMMIT},
+            "instance": {"repository_id": INST_ID},
+        }
+
+    def run_cli_provenance(self, *, data: object | None = None, raw: str | None = None,
+                           missing: bool = False, directory: bool = False,
+                           invalid_utf8: bool = False) -> subprocess.CompletedProcess[str]:
+        self.publish()
+        td = tempfile.TemporaryDirectory(prefix="s2b-cli-")
+        self.addCleanup(td.cleanup)
+        tmp = Path(td.name)
+        write_yaml(tmp, "locator.yaml", locator())
+        provenance_path = tmp / "provenance.yaml"
+        if missing:
+            provenance_path = tmp / "missing-provenance.yaml"
+        elif directory:
+            provenance_path.mkdir()
+        elif invalid_utf8:
+            provenance_path.write_bytes(b"\xff\xfe\xfa")
+        elif raw is not None:
+            provenance_path.write_text(raw, encoding="utf-8")
+        else:
+            payload = self.valid_cli_provenance() if data is None else data
+            provenance_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+        return subprocess.run(
+            [sys.executable, "scripts/validate_learning_os.py", str(self.instance_root),
+             "--deployment", "--control-snapshot", str(self.control),
+             "--core-snapshot", str(self.core_root),
+             "--instance-snapshot", str(self.instance_root),
+             "--locator", str(tmp / "locator.yaml"),
+             "--provenance", str(provenance_path)],
+            capture_output=True, text=True, cwd=CORE_REPO_ROOT, timeout=120,
+        )
+
+    def assert_cli_provenance_fail(self, r: subprocess.CompletedProcess[str], reason: str) -> None:
+        self.assertNotEqual(0, r.returncode, r.stdout + r.stderr)
+        self.assertNotIn("Traceback", r.stdout)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertIn("invalid --provenance", r.stderr)
+        self.assertIn(reason, r.stderr)
+
     # ===== Positive: PASS =====
 
     def test_valid_active_deployment_pass(self):
@@ -339,23 +383,86 @@ class DeploymentValidationTests(unittest.TestCase):
     # ===== CLI 面 =====
 
     def test_cli_deployment_surface(self):
-        self.publish()
-        tmp = self.instance_root.parent
-        write_yaml(tmp, "locator.yaml", locator())
-        write_yaml(tmp, "provenance.yaml", {
-            "control": {"repository_id": RC_ID},
-            "core": {"repository_id": CORE_ID, "commit_sha": COMMIT},
-            "instance": {"repository_id": INST_ID},
-        })
-        r = subprocess.run([sys.executable, "scripts/validate_learning_os.py", str(self.instance_root),
-                            "--deployment", "--control-snapshot", str(self.control),
-                            "--core-snapshot", str(self.core_root),
-                            "--instance-snapshot", str(self.instance_root),
-                            "--locator", str(tmp / "locator.yaml"),
-                            "--provenance", str(tmp / "provenance.yaml")],
-                           capture_output=True, text=True, cwd=CORE_REPO_ROOT, timeout=120)
+        r = self.run_cli_provenance()
         self.assertEqual(0, r.returncode, r.stdout + r.stderr)
         self.assertIn("0 error(s)", r.stdout)
+
+    def test_cli_provenance_optional_control_instance_full_commits_pass(self):
+        p = self.valid_cli_provenance()
+        p["control"]["commit_sha"] = "b" * 40
+        p["instance"]["commit_sha"] = "c" * 40
+        r = self.run_cli_provenance(data=p)
+        self.assertEqual(0, r.returncode, r.stdout + r.stderr)
+        self.assertIn("0 error(s)", r.stdout)
+
+    def test_cli_provenance_missing_file_fails_cleanly(self):
+        self.assert_cli_provenance_fail(self.run_cli_provenance(missing=True), "cannot read file")
+
+    def test_cli_provenance_directory_fails_cleanly(self):
+        self.assert_cli_provenance_fail(self.run_cli_provenance(directory=True), "cannot read file")
+
+    def test_cli_provenance_invalid_utf8_fails_cleanly(self):
+        self.assert_cli_provenance_fail(self.run_cli_provenance(invalid_utf8=True), "cannot read file")
+
+    def test_cli_provenance_invalid_yaml_fails_cleanly(self):
+        self.assert_cli_provenance_fail(self.run_cli_provenance(raw="control: [\n"), "invalid YAML")
+
+    def test_cli_provenance_top_level_non_mapping_fails_cleanly(self):
+        cases = {
+            "null": "null\n",
+            "list": "- x\n",
+            "string": "hello\n",
+            "integer": "123\n",
+            "boolean": "true\n",
+        }
+        for name, raw in cases.items():
+            with self.subTest(name=name):
+                self.assert_cli_provenance_fail(self.run_cli_provenance(raw=raw), "top-level must be a mapping")
+
+    def test_cli_provenance_missing_required_sections_fail_cleanly(self):
+        for section in ("control", "core", "instance"):
+            with self.subTest(section=section):
+                p = self.valid_cli_provenance(); del p[section]
+                self.assert_cli_provenance_fail(self.run_cli_provenance(data=p), "missing required section")
+
+    def test_cli_provenance_malformed_sections_fail_cleanly(self):
+        for section in ("control", "core", "instance"):
+            for value in ([], "hello", 1):
+                with self.subTest(section=section, value=repr(value)):
+                    p = self.valid_cli_provenance(); p[section] = value
+                    self.assert_cli_provenance_fail(self.run_cli_provenance(data=p), "must be a mapping")
+
+    def test_cli_provenance_unknown_top_level_key_fails_cleanly(self):
+        p = self.valid_cli_provenance(); p["unexpected"] = "x"
+        self.assert_cli_provenance_fail(self.run_cli_provenance(data=p), "unknown top-level keys")
+
+    def test_cli_provenance_unknown_section_keys_fail_cleanly(self):
+        for section in ("control", "core", "instance"):
+            with self.subTest(section=section):
+                p = self.valid_cli_provenance(); p[section]["commit"] = COMMIT
+                self.assert_cli_provenance_fail(self.run_cli_provenance(data=p), "unknown keys")
+
+    def test_cli_provenance_repository_ids_strict_fail_cleanly(self):
+        bad_values = ("123", True, 0, -1)
+        for section in ("control", "core", "instance"):
+            for value in bad_values:
+                with self.subTest(section=section, value=repr(value)):
+                    p = self.valid_cli_provenance(); p[section]["repository_id"] = value
+                    self.assert_cli_provenance_fail(self.run_cli_provenance(data=p), "repository_id")
+
+    def test_cli_provenance_core_commit_required_and_exact_fail_cleanly(self):
+        p = self.valid_cli_provenance(); del p["core"]["commit_sha"]
+        self.assert_cli_provenance_fail(self.run_cli_provenance(data=p), "commit_sha")
+        for value in ("abc1234", "main", "g" * 40):
+            with self.subTest(value=value):
+                p = self.valid_cli_provenance(); p["core"]["commit_sha"] = value
+                self.assert_cli_provenance_fail(self.run_cli_provenance(data=p), "commit_sha")
+
+    def test_cli_provenance_optional_commits_malformed_fail_cleanly(self):
+        for section, value in (("control", "short"), ("instance", "main")):
+            with self.subTest(section=section):
+                p = self.valid_cli_provenance(); p[section]["commit_sha"] = value
+                self.assert_cli_provenance_fail(self.run_cli_provenance(data=p), "commit_sha")
 
     def test_deployment_binding_from_contract_shape(self):
         b = DeploymentBinding.from_contract(contract(), locator())

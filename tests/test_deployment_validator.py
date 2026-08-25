@@ -106,6 +106,22 @@ class DeploymentValidationTests(unittest.TestCase):
             RepositorySnapshot(self.instance_root, inst_id),
         )
 
+    def contract_path_errors(self, path: object) -> set[str]:
+        ctrl, core, inst = self.snaps()
+        loc = locator(runtime_control={"contract_path": path})
+        return {f.code for f in validate_deployment(ctrl, core, inst, loc) if f.severity == "error"}
+
+    def external_contract(self) -> Path:
+        """Create a real readable valid contract outside the Runtime-Control snapshot."""
+        td = tempfile.TemporaryDirectory(dir=self.control.parent, prefix="s2a-outside-")
+        self.addCleanup(td.cleanup)
+        outside_root = Path(td.name)
+        write_yaml(outside_root, "deployment.yaml", contract())
+        path = outside_root / "deployment.yaml"
+        self.assertTrue(path.is_file())
+        self.assertIn("deployment_binding", path.read_text(encoding="utf-8"))
+        return path
+
     def errors(self, c: dict | None = None, loc: dict | None = None, **kw) -> set[str]:
         self.publish(c)
         ctrl, core, inst = self.snaps(**kw)
@@ -137,6 +153,47 @@ class DeploymentValidationTests(unittest.TestCase):
         ctrl, core, inst = self.snaps()
         codes = {f.code for f in validate_deployment(ctrl, core, inst, locator(runtime_control={"contract_path": "contracts/deployment.yaml"})) if f.severity == "error"}
         self.assertEqual(set(), codes)
+
+    # ===== S2A: repository-relative path containment =====
+
+    def test_fail_contract_path_absolute_existing_external_file(self):
+        outside = self.external_contract()
+        self.assertIn("deployment.contract_path_absolute", self.contract_path_errors(str(outside)))
+
+    def test_fail_contract_path_traversal_existing_external_file(self):
+        outside = self.external_contract()
+        rel = f"../{outside.parent.name}/{outside.name}"
+        self.assertIn("deployment.contract_path_traversal", self.contract_path_errors(rel))
+
+    def test_fail_contract_path_tilde(self):
+        self.assertIn("deployment.contract_path_home", self.contract_path_errors("~/deployment.yaml"))
+
+    def test_fail_contract_path_windows_drive(self):
+        self.assertIn("deployment.contract_path_windows_drive", self.contract_path_errors(r"C:\outside\deployment.yaml"))
+
+    def test_fail_contract_path_backslash_separator(self):
+        self.assertIn("deployment.contract_path_backslash", self.contract_path_errors(r"contracts\deployment.yaml"))
+
+    def test_fail_contract_path_unc(self):
+        self.assertIn("deployment.contract_path_absolute", self.contract_path_errors(r"\\server\share\deployment.yaml"))
+
+    def test_fail_contract_path_dot_segment(self):
+        self.assertIn("deployment.contract_path_dot", self.contract_path_errors("contracts/./deployment.yaml"))
+
+    def test_fail_contract_path_symlink_outside(self):
+        outside = self.external_contract()
+        (self.control / "link.yaml").symlink_to(outside)
+        self.assertIn("deployment.contract_path_symlink", self.contract_path_errors("link.yaml"))
+
+    def test_fail_contract_path_symlink_inside(self):
+        write_yaml(self.control, "real/deployment.yaml", contract())
+        (self.control / "link.yaml").symlink_to(Path("real/deployment.yaml"))
+        self.assertIn("deployment.contract_path_symlink", self.contract_path_errors("link.yaml"))
+
+    def test_fail_contract_path_symlink_directory_component(self):
+        write_yaml(self.control, "real-contracts/deployment.yaml", contract())
+        (self.control / "contracts").symlink_to("real-contracts", target_is_directory=True)
+        self.assertIn("deployment.contract_path_symlink", self.contract_path_errors("contracts/deployment.yaml"))
 
     def test_instance_state_schema_supported_pass(self):
         # Instance 0.3 state doc 落在 Core 支持列表内（经 validate_instance 复用）。

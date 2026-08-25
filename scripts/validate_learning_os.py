@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Deterministic mechanical validator for Learning OS canonical YAML."""
 from __future__ import annotations
-import argparse, re
+import argparse, re, stat
 from dataclasses import dataclass
 from pathlib import Path
 import yaml
@@ -17,6 +17,42 @@ NKIND={"concept","procedure","theorem","skill","representation","application","i
 class Finding:
     severity:str; code:str; path:str; message:str
     def render(self): return f"{self.severity.upper():7} {self.code:28} {self.path}: {self.message}"
+
+def resolve_repository_relative_file(snapshot_root:Path,ref):
+    """Resolve one repository-relative POSIX file without crossing trust boundaries.
+
+    The path is syntax-checked before touching candidate filesystem entries,
+    then every component is inspected with lstat so symlinks are rejected
+    rather than followed.  The returned Path is safe to read only when reason
+    is None.  Callers map the stable reason into their own Finding namespace.
+    """
+    if not isinstance(ref,str) or not ref or not ref.strip(): return None,"invalid","path must be a non-empty string"
+    if ref!=ref.strip(): return None,"invalid","leading/trailing whitespace is not valid repository path syntax"
+    if ref.startswith("~"): return None,"home","home-style paths are not repository-relative"
+    if ref.startswith(("/","\\")): return None,"absolute","absolute/UNC-style paths are forbidden"
+    if re.match(r"^[A-Za-z]:",ref): return None,"windows_drive","Windows drive path forms are forbidden"
+    if "\\" in ref: return None,"backslash","repository paths must use POSIX '/' separators"
+    parts=ref.split("/")
+    if any(part=="" for part in parts): return None,"invalid","empty path segments are forbidden"
+    if ".." in parts: return None,"traversal","'..' path segments are forbidden"
+    if "." in parts: return None,"dot","'.' path segments are forbidden"
+    try: root=Path(snapshot_root).resolve(strict=True)
+    except (OSError,ValueError,RuntimeError) as e: return None,"filesystem",f"snapshot root resolution failed: {e.__class__.__name__}"
+    current=root; mode=None
+    for part in parts:
+        current=current/part
+        try: mode=current.lstat().st_mode
+        except FileNotFoundError: return None,"missing","referenced file does not exist inside the snapshot"
+        except (OSError,ValueError) as e: return None,"filesystem",f"filesystem inspection failed: {e.__class__.__name__}"
+        if stat.S_ISLNK(mode): return None,"symlink","repository trust-boundary paths must not traverse symlinks"
+    try:
+        resolved=current.resolve(strict=True)
+        resolved.relative_to(root)
+    except FileNotFoundError: return None,"missing","referenced file does not exist inside the snapshot"
+    except ValueError: return None,"escape","resolved target escapes the snapshot root"
+    except (OSError,RuntimeError) as e: return None,"filesystem",f"target resolution failed: {e.__class__.__name__}"
+    if mode is None or not stat.S_ISREG(mode): return None,"not_file","referenced target must be an ordinary regular file"
+    return resolved,None,None
 
 class Validator:
     def __init__(self,root:Path): self.root=root.resolve(); self.docs={}; self.findings=[]; self.evidence=set(); self.curricula={}
@@ -282,7 +318,8 @@ class CoreValidator:
         proto=d.get("protocol") or {}
         routed={v for v in proto.values() if isinstance(v,str)}
         for k,v in proto.items():
-            if not isinstance(v,str) or not (self.root/v).is_file(): self.error("core.protocol_route",p,f"protocol.{k} -> missing file {v!r}")
+            _,reason,message=resolve_repository_relative_file(self.root,v)
+            if reason is not None: self.error("core.protocol_route",p,f"protocol.{k} -> invalid repository-relative file {v!r}: {reason}: {message}")
         pdir=self.root/"protocol"
         if pdir.is_dir():
             for fmd in sorted(pdir.glob("*.md")):
@@ -907,10 +944,15 @@ class DeploymentValidator:
         self.contract=None; self.contract_path=None
         if self.locator is None or not isinstance(self.locator.get("runtime_control"),dict): return
         if self.control_snap is None: return
-        cp=self.locator["runtime_control"].get("contract_path") or "deployment.yaml"
-        p=self.control_snap.root/cp
+        cp=self.locator["runtime_control"].get("contract_path")
+        if cp is None: cp="deployment.yaml"
+        p,reason,message=resolve_repository_relative_file(self.control_snap.root,cp)
+        if reason is not None:
+            where="<trusted-locator>:runtime_control.contract_path"
+            if reason=="missing": self.error("deployment.contract_missing",where,f"deployment contract {cp!r} is missing inside the Runtime-Control snapshot (fail closed)")
+            else: self.error(f"deployment.contract_path_{reason}",where,f"invalid Runtime-Control contract_path {cp!r}: {message}")
+            return
         self.contract_path=p
-        if not p.is_file(): self.error("deployment.contract_missing",p.as_posix(),"deployment contract is missing at the locator contract_path (fail closed)"); return
         try:d=yaml.safe_load(p.read_text(encoding="utf-8"))
         except Exception as e:self.error("yaml.parse",p.as_posix(),str(e)); return
         if not isinstance(d,dict): self.error("yaml.mapping",p.as_posix(),"deployment contract must be a mapping"); return

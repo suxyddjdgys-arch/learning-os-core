@@ -93,6 +93,16 @@ class CoreValidatorTests(unittest.TestCase):
             write_yaml(root, "domains/_template/curriculum.yaml", synthetic_curriculum())
         return root
 
+    def external_file(self, root: Path, name: str = "external.md", text: str = "# external\n") -> Path:
+        """Create a real readable file outside root but under the same parent."""
+        td = tempfile.TemporaryDirectory(dir=root.parent, prefix="s2a-outside-")
+        self.addCleanup(td.cleanup)
+        path = Path(td.name) / name
+        path.write_text(text, encoding="utf-8")
+        self.assertTrue(path.is_file())
+        self.assertEqual(text, path.read_text(encoding="utf-8"))
+        return path
+
     def assert_valid(self, root: Path) -> None:
         errors = [f.render() for f in validate_core(root) if f.severity == "error"]
         self.assertEqual([], errors)
@@ -245,6 +255,48 @@ class CoreValidatorTests(unittest.TestCase):
     def test_fail_protocol_route_to_missing_file(self):
         config = core_config(protocol={"runtime_core": "protocol/runtime-core.md", "schema": "protocol/schema.md"})
         root = self.make_snapshot(config=config)  # schema.md intentionally absent
+        self.assertIn("core.protocol_route", core_errors(root))
+
+    def test_fail_protocol_route_absolute_existing_external_file(self):
+        root = self.make_snapshot()
+        outside = self.external_file(root)
+        write_yaml(root, "config/core.yaml", core_config(protocol={"runtime_core": str(outside)}))
+        self.assertIn("core.protocol_route", core_errors(root))
+
+    def test_fail_protocol_route_traversal_existing_external_file(self):
+        root = self.make_snapshot()
+        outside = self.external_file(root)
+        rel = f"../{outside.parent.name}/{outside.name}"
+        write_yaml(root, "config/core.yaml", core_config(protocol={"runtime_core": rel}))
+        self.assertIn("core.protocol_route", core_errors(root))
+
+    def test_fail_protocol_route_windows_drive_form(self):
+        root = self.make_snapshot(config=core_config(protocol={"runtime_core": r"C:\outside\runtime-core.md"}))
+        self.assertIn("core.protocol_route", core_errors(root))
+
+    def test_fail_protocol_route_backslash_form(self):
+        root = self.make_snapshot(config=core_config(protocol={"runtime_core": r"protocol\runtime-core.md"}))
+        self.assertIn("core.protocol_route", core_errors(root))
+
+    def test_fail_protocol_route_symlink_inside_snapshot(self):
+        root = self.make_snapshot(config=core_config(protocol={"runtime_core": "protocol/link.route"}))
+        write_file(root, "protocol/inside-target.route", "inside\n")
+        (root / "protocol/link.route").symlink_to("inside-target.route")
+        self.assertIn("core.protocol_route", core_errors(root))
+
+    def test_fail_protocol_route_symlink_outside_snapshot(self):
+        root = self.make_snapshot(config=core_config(protocol={"runtime_core": "protocol/link.route"}))
+        outside = self.external_file(root, name="outside.route", text="outside\n")
+        (root / "protocol/link.route").symlink_to(outside)
+        self.assertIn("core.protocol_route", core_errors(root))
+
+    def test_fail_protocol_route_symlink_directory_component(self):
+        root = self.make_snapshot(config=core_config(protocol={"runtime_core": "protocol/linked/outside.route"}))
+        td = tempfile.TemporaryDirectory(dir=root.parent, prefix="s2a-outside-dir-")
+        self.addCleanup(td.cleanup)
+        outside_dir = Path(td.name)
+        (outside_dir / "outside.route").write_text("outside\n", encoding="utf-8")
+        (root / "protocol/linked").symlink_to(outside_dir, target_is_directory=True)
         self.assertIn("core.protocol_route", core_errors(root))
 
     def test_fail_unrouted_protocol_document(self):

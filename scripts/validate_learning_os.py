@@ -31,6 +31,47 @@ LEGACY_SCHEMA_VERSIONS={
     "branch_registry":{"0.3"},"branch_runtime":{"0.3"},"branch_report":{"0.3"},"coordination_event":{"0.3"},
     "hub_runtime":{"0.3"},"topic_report":{"0.3"},"learning_handoff":{"0.3"},"evidence":{"0.3"},
 }
+# Current production protocol/schema.md §2.3 canonical legacy storage registry.
+# Rule order has no semantic meaning: callers must collect every full match.
+_SEG=r"(?!(?:\.|\.\.)(?:/|$))[^/]+"
+_YAML_SEG=r"(?!(?:\.|\.\.)\.yaml$)[^/]+\.yaml"
+_CSEQ=r"C(?:0[1-9]|[1-9][0-9]+)"
+LEGACY_CANONICAL_PATH_RULES=(
+    (re.compile(r"config/project\.yaml"),"project_config"),
+    (re.compile(r"runtime/ui/conversation-sequences\.yaml"),"conversation_sequence_registry"),
+    (re.compile(rf"runtime/lineages/{_YAML_SEG}"),"lineage_control"),
+    (re.compile(r"learner/background\.yaml"),"learner_background"),
+    (re.compile(r"learner/model\.yaml"),"learner_model"),
+    (re.compile(r"learner/calibration\.yaml"),"learner_calibration"),
+    (re.compile(r"learner/costs\.yaml"),"learner_costs"),
+    (re.compile(r"learner/execution\.yaml"),"learner_execution"),
+    (re.compile(rf"learner/knowledge/{_YAML_SEG}"),"learner_knowledge"),
+    (re.compile(rf"domains/{_SEG}/curriculum\.yaml"),"curriculum"),
+    (re.compile(rf"topics/{_SEG}/goal\.yaml"),"topic_goal"),
+    (re.compile(rf"topics/{_SEG}/plan\.yaml"),"topic_plan"),
+    (re.compile(rf"topics/{_SEG}/progress\.yaml"),"topic_progress"),
+    (re.compile(rf"topics/{_SEG}/deferred\.yaml"),"topic_deferred"),
+    (re.compile(rf"topics/{_SEG}/subtopics/{_SEG}/definition\.yaml"),"subtopic_definition"),
+    (re.compile(rf"topics/{_SEG}/subtopics/{_SEG}/plan\.yaml"),"subtopic_plan"),
+    (re.compile(rf"topics/{_SEG}/subtopics/{_SEG}/progress\.yaml"),"subtopic_progress"),
+    (re.compile(rf"execution/weekly/{_YAML_SEG}"),"weekly_execution"),
+    (re.compile(rf"topics/{_SEG}/execution/daily/{_YAML_SEG}"),"daily_execution"),
+    (re.compile(rf"topics/{_SEG}/execution/sessions/{_YAML_SEG}"),"execution_session"),
+    (re.compile(rf"topics/{_SEG}/coordination/branches\.yaml"),"branch_registry"),
+    (re.compile(rf"topics/{_SEG}/coordination/branches/{_SEG}/runtime\.yaml"),"branch_runtime"),
+    (re.compile(rf"topics/{_SEG}/coordination/branches/{_SEG}/report\.yaml"),"branch_report"),
+    (re.compile(rf"topics/{_SEG}/coordination/events/{_YAML_SEG}"),"coordination_event"),
+    (re.compile(r"coordination/hub/runtime\.yaml"),"hub_runtime"),
+    (re.compile(rf"topics/{_SEG}/coordination/topic-report\.yaml"),"topic_report"),
+    (re.compile(rf"topics/{_SEG}/handoffs/{_SEG}/{_CSEQ}-to-{_CSEQ}\.yaml"),"learning_handoff"),
+    (re.compile(rf"topics/{_SEG}/subtopics/{_SEG}/handoffs/{_SEG}/{_CSEQ}-to-{_CSEQ}\.yaml"),"learning_handoff"),
+    (re.compile(rf"evidence/{_YAML_SEG}"),"evidence"),
+)
+
+def expected_types_for_path(p):
+    """Return every canonical legacy document type whose storage rule matches p."""
+    return tuple(t for rx,t in LEGACY_CANONICAL_PATH_RULES if rx.fullmatch(p))
+
 PLANNED={"planned","in_progress","completed","blocked","deferred","dropped"}; CONF={"low","medium","high"}
 CAP={"provisional","supported","conflicted","unsupported"}; EDIR={"support","challenge","neutral","deferred"}
 GEN={"active","idle","handoff_pending","archived","deprecated"}; BROLE={"hub","main","practice","deep_dive"}; BLIFE={"active","idle","retired"}
@@ -85,10 +126,8 @@ class Validator:
         if v not in a: self.error("enum.invalid",p,f"{f}={v!r} not in {sorted(a)}")
     @staticmethod
     def expected(p):
-        exact={"config/project.yaml":"project_config","runtime/ui/conversation-sequences.yaml":"conversation_sequence_registry","learner/background.yaml":"learner_background","learner/model.yaml":"learner_model","learner/calibration.yaml":"learner_calibration","learner/costs.yaml":"learner_costs","learner/execution.yaml":"learner_execution"}
-        if p in exact:return exact[p]
-        pats=[(r"runtime/lineages/[^/]+\.yaml","lineage_control"),(r"learner/knowledge/[^/]+\.yaml","learner_knowledge"),(r"domains/[^/]+/curriculum\.yaml","curriculum"),(r"evidence/[^/]+\.yaml","evidence"),(r"execution/weekly/[^/]+\.yaml","weekly_execution"),(r"topics/[^/]+/goal\.yaml","topic_goal"),(r"topics/[^/]+/plan\.yaml","topic_plan"),(r"topics/[^/]+/progress\.yaml","topic_progress"),(r"topics/[^/]+/deferred\.yaml","topic_deferred"),(r"topics/[^/]+/subtopics/[^/]+/definition\.yaml","subtopic_definition"),(r"topics/[^/]+/subtopics/[^/]+/plan\.yaml","subtopic_plan"),(r"topics/[^/]+/subtopics/[^/]+/progress\.yaml","subtopic_progress"),(r"topics/[^/]+/coordination/branches\.yaml","branch_registry"),(r"topics/[^/]+/coordination/branches/[^/]+/runtime\.yaml","branch_runtime"),(r"topics/[^/]+/execution/sessions/[^/]+\.yaml","execution_session"),(r"topics/[^/]+/subtopics/[^/]+/handoffs/[^/]+/[^/]+\.yaml","learning_handoff")]
-        return next((t for r,t in pats if re.fullmatch(r,p)),None)
+        matches=expected_types_for_path(p)
+        return matches[0] if len(matches)==1 else None
     def load(self):
         for f in sorted(self.root.rglob("*.yaml")):
             rp=f.relative_to(self.root)
@@ -98,29 +137,38 @@ class Validator:
             except Exception as e:self.error("yaml.parse",p,str(e));continue
             if not isinstance(d,dict):self.error("yaml.mapping",p,"canonical YAML must be mapping");continue
             self.docs[p]=d
-        for p,d in self.docs.items():
-            if d.get("document_type")=="evidence" and isinstance(d.get("id"),str):
-                if d["id"] in self.evidence:self.error("evidence.duplicate_id",p,d["id"])
-                self.evidence.add(d["id"])
-            if d.get("document_type")=="curriculum" and isinstance(d.get("domain"),dict) and isinstance(d["domain"].get("id"),str):self.curricula[d["domain"]["id"]]=d
     def structural(self):
         req={"project_config":("project","repository","time","runtime","protocol"),"conversation_sequence_registry":("sequence_format","scopes"),"lineage_control":("lineage","active_generation","pending_handoff"),"learner_knowledge":("revision","domain","concepts"),"curriculum":("domain","curriculum_version","nodes"),"topic_goal":("revision","topic","goal"),"topic_plan":("revision","topic","plan"),"topic_progress":("revision","topic","plan_revision","lifecycle","milestones"),"subtopic_definition":("subtopic",),"subtopic_plan":("revision","topic","subtopic","plan"),"subtopic_progress":("revision","topic","subtopic","plan_revision","milestones"),"weekly_execution":("revision","window"),"branch_registry":("revision","topic","branches"),"branch_runtime":("revision","topic","branch_id","lineage_id","active_generation","pending_successor","generations"),"execution_session":("id","topic","branch","meaningful_learning"),"learning_handoff":("topic","branch_id","lineage_id","from_generation","to_generation"),"evidence":("id","observed_at","observation","interpretation","targets")}
         for p,d in self.docs.items():
-            if "schema_version" not in d:self.error("yaml.schema_version",p,"missing schema_version")
-            if "document_type" not in d:self.error("yaml.document_type",p,"missing document_type");continue
+            if "document_type" not in d:self.error("yaml.document_type",p,"missing document_type");self.schema_blocked.add(p);continue
             t=d["document_type"]
             if not isinstance(t,str) or not t.strip():
-                self.error("yaml.document_type_invalid",p,f"document_type must be a non-empty, non-whitespace string; found {t!r}");continue
+                self.error("yaml.document_type_invalid",p,f"document_type must be a non-empty, non-whitespace string; found {t!r}");self.schema_blocked.add(p);continue
             if t not in LEGACY_CANONICAL_DOCUMENT_TYPES:
-                self.error("yaml.document_type_unknown",p,f"unknown/noncanonical document_type {t!r}");continue
-            if "schema_version" in d:
-                v=d["schema_version"]
-                if not isinstance(v,str) or not v.strip():
-                    self.error("yaml.schema_version_invalid",p,f"schema_version must be a non-empty, non-whitespace string; found {v!r}");self.schema_blocked.add(p);continue
-                if v not in LEGACY_SCHEMA_VERSIONS[t]:
-                    self.error("yaml.schema_version_unsupported",p,f"document_type {t!r} schema_version {v!r} is unsupported; accepted versions are {sorted(LEGACY_SCHEMA_VERSIONS[t])}");self.schema_blocked.add(p);continue
-            e=self.expected(p)
-            if e and t!=e:self.error("path.document_type",p,f"expected {e}, found {t}")
+                self.error("yaml.document_type_unknown",p,f"unknown/noncanonical document_type {t!r}");self.schema_blocked.add(p);continue
+            if "schema_version" not in d:
+                self.error("yaml.schema_version",p,"missing schema_version");self.schema_blocked.add(p);continue
+            v=d["schema_version"]
+            if not isinstance(v,str) or not v.strip():
+                self.error("yaml.schema_version_invalid",p,f"schema_version must be a non-empty, non-whitespace string; found {v!r}");self.schema_blocked.add(p);continue
+            if v not in LEGACY_SCHEMA_VERSIONS[t]:
+                self.error("yaml.schema_version_unsupported",p,f"document_type {t!r} schema_version {v!r} is unsupported; accepted versions are {sorted(LEGACY_SCHEMA_VERSIONS[t])}");self.schema_blocked.add(p);continue
+            matches=expected_types_for_path(p)
+            if not matches:
+                self.error("path.unregistered",p,f"no canonical storage family registered for {p}");self.schema_blocked.add(p);continue
+            if len(matches)>1:
+                self.error("path.ambiguous",p,f"multiple canonical storage families match {p}: {list(matches)}");self.schema_blocked.add(p);continue
+            e=matches[0]
+            if t!=e:
+                self.error("path.document_type",p,f"expected {e}, found {t}");self.schema_blocked.add(p);continue
+            if t in {"evidence","coordination_event"}:
+                stem=Path(p).stem; ident=d.get("id")
+                if not isinstance(ident,str) or ident!=stem:
+                    self.error("path.identity",p,f"filename stem {stem!r} must equal document id {ident!r}");self.schema_blocked.add(p);continue
+            if t=="evidence" and isinstance(d.get("id"),str):
+                if d["id"] in self.evidence:self.error("evidence.duplicate_id",p,d["id"])
+                self.evidence.add(d["id"])
+            if t=="curriculum" and isinstance(d.get("domain"),dict) and isinstance(d["domain"].get("id"),str):self.curricula[d["domain"]["id"]]=d
             for k in req.get(t,()):
                 if k not in d:self.error("document.required",p,f"missing {k}")
             if t=="topic_plan":self.enum(p,"plan.status",(d.get("plan")or{}).get("status"),{"awaiting_intake","provisional","active","paused"})

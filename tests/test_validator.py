@@ -3,13 +3,18 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
+import scripts.validate_learning_os as validator_module
 from scripts.validate_learning_os import (
     LEGACY_CANONICAL_DOCUMENT_TYPES,
+    LEGACY_CANONICAL_PATH_RULES,
     LEGACY_SCHEMA_VERSIONS,
+    ROOTS,
     Validator,
+    expected_types_for_path,
 )
 
 
@@ -74,6 +79,38 @@ EXPECTED_LEGACY_SCHEMA_VERSIONS = {
     "learning_handoff": {"0.3"},
     "evidence": {"0.3"},
 }
+
+CANONICAL_PATH_SAMPLES = (
+    ("config/project.yaml", "project_config"),
+    ("runtime/ui/conversation-sequences.yaml", "conversation_sequence_registry"),
+    ("runtime/lineages/learning-os-design.yaml", "lineage_control"),
+    ("learner/background.yaml", "learner_background"),
+    ("learner/model.yaml", "learner_model"),
+    ("learner/calibration.yaml", "learner_calibration"),
+    ("learner/costs.yaml", "learner_costs"),
+    ("learner/execution.yaml", "learner_execution"),
+    ("learner/knowledge/foo.yaml", "learner_knowledge"),
+    ("domains/foo/curriculum.yaml", "curriculum"),
+    ("topics/foo/goal.yaml", "topic_goal"),
+    ("topics/foo/plan.yaml", "topic_plan"),
+    ("topics/foo/progress.yaml", "topic_progress"),
+    ("topics/foo/deferred.yaml", "topic_deferred"),
+    ("topics/foo/subtopics/bar/definition.yaml", "subtopic_definition"),
+    ("topics/foo/subtopics/bar/plan.yaml", "subtopic_plan"),
+    ("topics/foo/subtopics/bar/progress.yaml", "subtopic_progress"),
+    ("execution/weekly/2026-W35.yaml", "weekly_execution"),
+    ("topics/foo/execution/daily/2026-08-25.yaml", "daily_execution"),
+    ("topics/foo/execution/sessions/s1.yaml", "execution_session"),
+    ("topics/foo/coordination/branches.yaml", "branch_registry"),
+    ("topics/foo/coordination/branches/main/runtime.yaml", "branch_runtime"),
+    ("topics/foo/coordination/branches/main/report.yaml", "branch_report"),
+    ("topics/foo/coordination/events/evt_x.yaml", "coordination_event"),
+    ("coordination/hub/runtime.yaml", "hub_runtime"),
+    ("topics/foo/coordination/topic-report.yaml", "topic_report"),
+    ("topics/foo/handoffs/lineage-x/C01-to-C02.yaml", "learning_handoff"),
+    ("topics/foo/subtopics/bar/handoffs/lineage-x/C01-to-C02.yaml", "learning_handoff"),
+    ("evidence/evi_x.yaml", "evidence"),
+)
 
 
 def write_yaml(root: Path, rel: str, data: dict) -> None:
@@ -159,6 +196,22 @@ def valid_evidence() -> dict:
         "observation": {"kind": "learner_explanation", "summary": "example"},
         "interpretation": {"direction": "support", "diagnosticity": "medium", "novelty": "high", "confidence": "high"},
         "targets": [{"type": "capability", "domain": "domain-a", "concept": "node.a", "capability": "explanation"}],
+    }
+
+
+def valid_coordination_event(event_id: str = "evt_1") -> dict:
+    return {
+        "schema_version": "0.3",
+        "document_type": "coordination_event",
+        "id": event_id,
+        "observed_at": "2026-08-25T08:00:00+08:00",
+        "producer": {"type": "branch", "id": "main"},
+        "target_scope": "topic",
+        "type": "progress_transition",
+        "subtype": "test",
+        "hub_attention": {"level": "review"},
+        "payload": {},
+        "refs": {},
     }
 
 
@@ -261,6 +314,15 @@ class ValidatorTests(unittest.TestCase):
         for t in ("topic_deferred", "daily_execution", "branch_report", "hub_runtime", "topic_report"):
             self.assertEqual({"0.3"}, LEGACY_SCHEMA_VERSIONS[t])
 
+    def test_legacy_path_registry_matches_complete_canonical_contract(self):
+        self.assertEqual(29, len(LEGACY_CANONICAL_PATH_RULES))
+        self.assertEqual(LEGACY_CANONICAL_DOCUMENT_TYPES, {t for _, t in LEGACY_CANONICAL_PATH_RULES})
+        self.assertEqual(2, sum(1 for _, t in LEGACY_CANONICAL_PATH_RULES if t == "learning_handoff"))
+        for path, expected_type in CANONICAL_PATH_SAMPLES:
+            with self.subTest(path=path):
+                self.assertEqual((expected_type,), expected_types_for_path(path))
+                self.assertIn(path.split("/", 1)[0], ROOTS)
+
     def test_valid_curriculum_schema_01_boundary(self):
         td, root = self.make_repo(); self.addCleanup(td.cleanup)
         write_yaml(root, "domains/domain-a/curriculum.yaml", valid_curriculum())
@@ -301,6 +363,28 @@ class ValidatorTests(unittest.TestCase):
         write_yaml(root, "evidence/evi_1.yaml", valid_evidence())
         write_yaml(root, "learner/knowledge/domain-a.yaml", valid_knowledge())
         self.assert_valid(root)
+
+    def test_valid_coordination_event_identity(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        write_yaml(root, "topics/foo/coordination/events/evt_1.yaml", valid_coordination_event())
+        self.assertNotIn("path.identity", error_codes(root))
+
+    def test_valid_lazy_and_previously_underregistered_paths(self):
+        cases = (
+            ("topics/foo/deferred.yaml", {"schema_version": "0.3", "document_type": "topic_deferred"}),
+            ("topics/foo/execution/daily/2026-08-25.yaml", {"schema_version": "0.3", "document_type": "daily_execution"}),
+            ("topics/foo/coordination/branches/main/report.yaml", {"schema_version": "0.3", "document_type": "branch_report"}),
+            ("coordination/hub/runtime.yaml", {"schema_version": "0.3", "document_type": "hub_runtime"}),
+            ("topics/foo/coordination/topic-report.yaml", {"schema_version": "0.3", "document_type": "topic_report"}),
+        )
+        for rel, data in cases:
+            with self.subTest(rel=rel):
+                td, root = self.make_repo(); self.addCleanup(td.cleanup)
+                write_yaml(root, rel, data)
+                codes = error_codes(root)
+                self.assertNotIn("path.unregistered", codes)
+                self.assertNotIn("path.ambiguous", codes)
+                self.assertNotIn("path.document_type", codes)
 
     def test_valid_topic_subtopic_plan_progress_refs(self):
         td, root = self.make_repo(); self.addCleanup(td.cleanup)
@@ -343,6 +427,7 @@ class ValidatorTests(unittest.TestCase):
                 codes = error_codes(root)
                 self.assertIn("yaml.schema_version_unsupported", codes)
                 self.assertNotIn("document.required", codes)
+                self.assertNotIn("path.unregistered", codes)
 
     def test_fail_curriculum_schema_03_boundary(self):
         td, root = self.make_repo(); self.addCleanup(td.cleanup)
@@ -362,7 +447,9 @@ class ValidatorTests(unittest.TestCase):
         td, root = self.make_repo(); self.addCleanup(td.cleanup)
         self.assertIsNone(Validator.expected("topics/custom.yaml"))
         write_yaml(root, "topics/custom.yaml", {"schema_version": "0.3"})
-        self.assertIn("yaml.document_type", error_codes(root))
+        codes = error_codes(root)
+        self.assertIn("yaml.document_type", codes)
+        self.assertNotIn("path.unregistered", codes)
 
     def test_fail_malformed_document_types_do_not_crash(self):
         td, root = self.make_repo(); self.addCleanup(td.cleanup)
@@ -385,6 +472,7 @@ class ValidatorTests(unittest.TestCase):
                 self.assertIn("yaml.document_type_invalid", codes)
                 self.assertNotIn("yaml.schema_version_invalid", codes)
                 self.assertNotIn("yaml.schema_version_unsupported", codes)
+                self.assertNotIn("path.unregistered", codes)
 
     def test_fail_unknown_document_types_on_unregistered_path(self):
         td, root = self.make_repo(); self.addCleanup(td.cleanup)
@@ -396,6 +484,7 @@ class ValidatorTests(unittest.TestCase):
                 self.assertIn("yaml.document_type_unknown", codes)
                 self.assertNotIn("yaml.schema_version_invalid", codes)
                 self.assertNotIn("yaml.schema_version_unsupported", codes)
+                self.assertNotIn("path.unregistered", codes)
 
     def test_fail_historical_v02_document_types_on_unregistered_path(self):
         td, root = self.make_repo(); self.addCleanup(td.cleanup)
@@ -403,7 +492,65 @@ class ValidatorTests(unittest.TestCase):
         for value in ("domain_goal", "domain_plan", "domain_state", "domain_deferred"):
             with self.subTest(document_type=value):
                 write_yaml(root, "topics/custom.yaml", {"schema_version": "0.3", "document_type": value})
-                self.assertIn("yaml.document_type_unknown", error_codes(root))
+                codes = error_codes(root)
+                self.assertIn("yaml.document_type_unknown", codes)
+                self.assertNotIn("path.unregistered", codes)
+
+    def test_fail_unregistered_known_current_paths(self):
+        cases = (
+            ("topics/foo/custom.yaml", {"schema_version": "0.3", "document_type": "topic_goal"}),
+            ("topics/foo/evidence.yaml", {**valid_evidence(), "id": "evidence"}),
+            ("domains/foo/custom.yaml", valid_curriculum()),
+            ("evidence/nested/evi_1.yaml", valid_evidence()),
+            ("topics/foo/coordination/random.yaml", valid_coordination_event("random")),
+        )
+        for rel, data in cases:
+            with self.subTest(rel=rel):
+                td, root = self.make_repo(); self.addCleanup(td.cleanup)
+                write_yaml(root, rel, data)
+                codes = error_codes(root)
+                self.assertIn("path.unregistered", codes)
+                self.assertNotIn("document.required", codes)
+
+    def test_fail_path_registry_ambiguity_does_not_first_match(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        write_yaml(root, "config/project.yaml", valid_project_config())
+        duplicate_rules = LEGACY_CANONICAL_PATH_RULES + (LEGACY_CANONICAL_PATH_RULES[0],)
+        with patch.object(validator_module, "LEGACY_CANONICAL_PATH_RULES", duplicate_rules):
+            codes = error_codes(root)
+        self.assertIn("path.ambiguous", codes)
+        self.assertNotIn("path.document_type", codes)
+        self.assertNotIn("document.required", codes)
+
+    def test_fail_path_placeholder_dot_segments_are_unregistered(self):
+        cases = (
+            "topics/./goal.yaml",
+            "topics/../goal.yaml",
+            "domains/./curriculum.yaml",
+            "evidence/...yaml",
+        )
+        for path in cases:
+            with self.subTest(path=path):
+                self.assertEqual((), expected_types_for_path(path))
+
+    def test_fail_invalid_handoff_filename_is_unregistered(self):
+        self.assertEqual((), expected_types_for_path("topics/foo/handoffs/lineage-x/handoff.yaml"))
+        self.assertEqual((), expected_types_for_path("topics/foo/handoffs/lineage-x/C00-to-C01.yaml"))
+
+    def test_fail_evidence_identity_mismatch(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        data = valid_evidence(); data["id"] = "evi_2"
+        write_yaml(root, "evidence/evi_1.yaml", data)
+        codes = error_codes(root)
+        self.assertIn("path.identity", codes)
+        self.assertNotIn("document.required", codes)
+
+    def test_fail_coordination_event_identity_mismatch(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        write_yaml(root, "topics/foo/coordination/events/evt_1.yaml", valid_coordination_event("evt_2"))
+        codes = error_codes(root)
+        self.assertIn("path.identity", codes)
+        self.assertNotIn("document.required", codes)
 
     def test_fail_two_active_branch_generations(self):
         td, root = self.make_repo(); self.addCleanup(td.cleanup)
@@ -465,8 +612,11 @@ class ValidatorTests(unittest.TestCase):
 
     def test_fail_invalid_document_type_for_path(self):
         td, root = self.make_repo(); self.addCleanup(td.cleanup)
-        write_yaml(root, "topics/topic-a/progress.yaml", {"schema_version": "0.3", "document_type": "topic_plan"})
-        self.assertIn("path.document_type", error_codes(root))
+        write_yaml(root, "topics/topic-a/goal.yaml", {"schema_version": "0.3", "document_type": "topic_plan"})
+        codes = error_codes(root)
+        self.assertIn("path.document_type", codes)
+        self.assertNotIn("yaml.schema_version_unsupported", codes)
+        self.assertNotIn("document.required", codes)
 
     def test_valid_open_weekly_projection_may_be_stale(self):
         td, root = self.make_repo(); self.addCleanup(td.cleanup)

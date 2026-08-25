@@ -6,7 +6,39 @@ from pathlib import Path
 
 import yaml
 
-from scripts.validate_learning_os import Validator
+from scripts.validate_learning_os import LEGACY_CANONICAL_DOCUMENT_TYPES, Validator
+
+
+EXPECTED_LEGACY_CANONICAL_DOCUMENT_TYPES = {
+    "project_config",
+    "conversation_sequence_registry",
+    "lineage_control",
+    "learner_background",
+    "learner_model",
+    "learner_calibration",
+    "learner_costs",
+    "learner_execution",
+    "learner_knowledge",
+    "curriculum",
+    "topic_goal",
+    "topic_plan",
+    "topic_progress",
+    "topic_deferred",
+    "subtopic_definition",
+    "subtopic_plan",
+    "subtopic_progress",
+    "weekly_execution",
+    "daily_execution",
+    "execution_session",
+    "branch_registry",
+    "branch_runtime",
+    "branch_report",
+    "coordination_event",
+    "hub_runtime",
+    "topic_report",
+    "learning_handoff",
+    "evidence",
+}
 
 
 def write_yaml(root: Path, rel: str, data: dict) -> None:
@@ -168,6 +200,10 @@ class ValidatorTests(unittest.TestCase):
         self.assertEqual([], errors)
 
     # PASS fixtures
+    def test_current_canonical_document_type_allowlist_matches_schema(self):
+        self.assertEqual(EXPECTED_LEGACY_CANONICAL_DOCUMENT_TYPES, LEGACY_CANONICAL_DOCUMENT_TYPES)
+        self.assertEqual(28, len(LEGACY_CANONICAL_DOCUMENT_TYPES))
+
     def test_valid_active_project_lineage(self):
         td, root = self.make_repo(); self.addCleanup(td.cleanup)
         write_yaml(root, "runtime/lineages/learning-os-design.yaml", valid_lineage())
@@ -215,6 +251,48 @@ class ValidatorTests(unittest.TestCase):
         self.assert_valid(root)
 
     # FAIL fixtures
+    def test_fail_missing_document_type_on_unregistered_path(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        self.assertIsNone(Validator.expected("topics/custom.yaml"))
+        write_yaml(root, "topics/custom.yaml", {"schema_version": "0.3"})
+        self.assertIn("yaml.document_type", error_codes(root))
+
+    def test_fail_malformed_document_types_do_not_crash(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        self.assertIsNone(Validator.expected("topics/custom.yaml"))
+        cases = (
+            ("null", None),
+            ("integer", 123),
+            ("bool_true", True),
+            ("bool_false", False),
+            ("list", []),
+            ("dict", {}),
+            ("empty", ""),
+            ("whitespace", "   "),
+        )
+        for name, value in cases:
+            with self.subTest(name=name):
+                write_yaml(root, "topics/custom.yaml", {"schema_version": "0.3", "document_type": value})
+                findings = Validator(root).run()
+                codes = {f.code for f in findings if f.severity == "error"}
+                self.assertIn("yaml.document_type_invalid", codes)
+
+    def test_fail_unknown_document_types_on_unregistered_path(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        self.assertIsNone(Validator.expected("topics/custom.yaml"))
+        for value in ("definitely_not_canonical", "core_config", "instance_config", "deployment_binding"):
+            with self.subTest(document_type=value):
+                write_yaml(root, "topics/custom.yaml", {"schema_version": "0.3", "document_type": value})
+                self.assertIn("yaml.document_type_unknown", error_codes(root))
+
+    def test_fail_historical_v02_document_types_on_unregistered_path(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        self.assertIsNone(Validator.expected("topics/custom.yaml"))
+        for value in ("domain_goal", "domain_plan", "domain_state", "domain_deferred"):
+            with self.subTest(document_type=value):
+                write_yaml(root, "topics/custom.yaml", {"schema_version": "0.3", "document_type": value})
+                self.assertIn("yaml.document_type_unknown", error_codes(root))
+
     def test_fail_two_active_branch_generations(self):
         td, root = self.make_repo(); self.addCleanup(td.cleanup)
         data = valid_branch_runtime(); data["generations"][1]["lifecycle"] = "active"

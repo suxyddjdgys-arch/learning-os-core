@@ -6,7 +6,11 @@ from pathlib import Path
 
 import yaml
 
-from scripts.validate_learning_os import LEGACY_CANONICAL_DOCUMENT_TYPES, Validator
+from scripts.validate_learning_os import (
+    LEGACY_CANONICAL_DOCUMENT_TYPES,
+    LEGACY_SCHEMA_VERSIONS,
+    Validator,
+)
 
 
 EXPECTED_LEGACY_CANONICAL_DOCUMENT_TYPES = {
@@ -38,6 +42,37 @@ EXPECTED_LEGACY_CANONICAL_DOCUMENT_TYPES = {
     "topic_report",
     "learning_handoff",
     "evidence",
+}
+
+EXPECTED_LEGACY_SCHEMA_VERSIONS = {
+    "project_config": {"0.3"},
+    "conversation_sequence_registry": {"0.3"},
+    "lineage_control": {"0.3"},
+    "learner_background": {"0.1"},
+    "learner_model": {"0.1"},
+    "learner_calibration": {"0.1"},
+    "learner_costs": {"0.1"},
+    "learner_execution": {"0.3"},
+    "learner_knowledge": {"0.3"},
+    "curriculum": {"0.1"},
+    "topic_goal": {"0.3"},
+    "topic_plan": {"0.3"},
+    "topic_progress": {"0.3"},
+    "topic_deferred": {"0.3"},
+    "subtopic_definition": {"0.3"},
+    "subtopic_plan": {"0.3"},
+    "subtopic_progress": {"0.3"},
+    "weekly_execution": {"0.3"},
+    "daily_execution": {"0.3"},
+    "execution_session": {"0.3"},
+    "branch_registry": {"0.3"},
+    "branch_runtime": {"0.3"},
+    "branch_report": {"0.3"},
+    "coordination_event": {"0.3"},
+    "hub_runtime": {"0.3"},
+    "topic_report": {"0.3"},
+    "learning_handoff": {"0.3"},
+    "evidence": {"0.3"},
 }
 
 
@@ -159,6 +194,18 @@ def valid_curriculum() -> dict:
     }
 
 
+def valid_project_config() -> dict:
+    return {
+        "schema_version": "0.3",
+        "document_type": "project_config",
+        "project": {"id": "learning-os"},
+        "repository": {"full_name": "owner/repo"},
+        "time": {"display_timezone": "Asia/Shanghai"},
+        "runtime": {},
+        "protocol": {},
+    }
+
+
 def valid_topic_bundle(root: Path) -> None:
     write_yaml(root, "topics/topic-a/goal.yaml", {
         "schema_version": "0.3", "document_type": "topic_goal", "revision": 2,
@@ -204,6 +251,26 @@ class ValidatorTests(unittest.TestCase):
         self.assertEqual(EXPECTED_LEGACY_CANONICAL_DOCUMENT_TYPES, LEGACY_CANONICAL_DOCUMENT_TYPES)
         self.assertEqual(28, len(LEGACY_CANONICAL_DOCUMENT_TYPES))
 
+    def test_legacy_schema_version_matrix_matches_canonical_contract(self):
+        self.assertEqual(EXPECTED_LEGACY_SCHEMA_VERSIONS, LEGACY_SCHEMA_VERSIONS)
+        self.assertEqual(LEGACY_CANONICAL_DOCUMENT_TYPES, set(LEGACY_SCHEMA_VERSIONS))
+        for versions in LEGACY_SCHEMA_VERSIONS.values():
+            self.assertIsInstance(versions, (set, frozenset))
+            self.assertTrue(versions)
+            self.assertTrue(all(isinstance(v, str) and v.strip() for v in versions))
+        for t in ("topic_deferred", "daily_execution", "branch_report", "hub_runtime", "topic_report"):
+            self.assertEqual({"0.3"}, LEGACY_SCHEMA_VERSIONS[t])
+
+    def test_valid_curriculum_schema_01_boundary(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        write_yaml(root, "domains/domain-a/curriculum.yaml", valid_curriculum())
+        self.assertNotIn("yaml.schema_version_unsupported", error_codes(root))
+
+    def test_valid_project_config_schema_03_boundary(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        write_yaml(root, "config/project.yaml", valid_project_config())
+        self.assert_valid(root)
+
     def test_valid_active_project_lineage(self):
         td, root = self.make_repo(); self.addCleanup(td.cleanup)
         write_yaml(root, "runtime/lineages/learning-os-design.yaml", valid_lineage())
@@ -243,14 +310,54 @@ class ValidatorTests(unittest.TestCase):
 
     def test_sparse_repository_is_valid(self):
         td, root = self.make_repo(); self.addCleanup(td.cleanup)
-        write_yaml(root, "config/project.yaml", {
-            "schema_version": "0.3", "document_type": "project_config",
-            "project": {"id": "learning-os"}, "repository": {"full_name": "owner/repo"},
-            "time": {"display_timezone": "Asia/Shanghai"}, "runtime": {}, "protocol": {},
-        })
+        write_yaml(root, "config/project.yaml", valid_project_config())
         self.assert_valid(root)
 
     # FAIL fixtures
+    def test_fail_missing_schema_version_preserves_existing_code(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        data = valid_project_config(); del data["schema_version"]
+        write_yaml(root, "config/project.yaml", data)
+        self.assertIn("yaml.schema_version", error_codes(root))
+
+    def test_fail_malformed_schema_versions_do_not_crash(self):
+        cases = (
+            ("null", None), ("integer", 123), ("bool_true", True), ("bool_false", False),
+            ("list", []), ("dict", {}), ("empty", ""), ("whitespace", "   "), ("float", 0.3),
+        )
+        for name, value in cases:
+            with self.subTest(name=name):
+                td, root = self.make_repo(); self.addCleanup(td.cleanup)
+                data = valid_project_config(); data["schema_version"] = value
+                write_yaml(root, "config/project.yaml", data)
+                findings = Validator(root).run()
+                codes = {f.code for f in findings if f.severity == "error"}
+                self.assertIn("yaml.schema_version_invalid", codes)
+                self.assertNotIn("document.required", codes)
+
+    def test_fail_unsupported_schema_versions_stop_structural_dispatch(self):
+        for value in ("999", "future", "0.4", " 0.3 ", "0.30"):
+            with self.subTest(schema_version=value):
+                td, root = self.make_repo(); self.addCleanup(td.cleanup)
+                write_yaml(root, "config/project.yaml", {"schema_version": value, "document_type": "project_config"})
+                codes = error_codes(root)
+                self.assertIn("yaml.schema_version_unsupported", codes)
+                self.assertNotIn("document.required", codes)
+
+    def test_fail_curriculum_schema_03_boundary(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        data = valid_curriculum(); data["schema_version"] = "0.3"
+        write_yaml(root, "domains/domain-a/curriculum.yaml", data)
+        codes = error_codes(root)
+        self.assertIn("yaml.schema_version_unsupported", codes)
+        self.assertNotIn("document.required", codes)
+
+    def test_fail_project_config_schema_01_boundary(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        data = valid_project_config(); data["schema_version"] = "0.1"
+        write_yaml(root, "config/project.yaml", data)
+        self.assertIn("yaml.schema_version_unsupported", error_codes(root))
+
     def test_fail_missing_document_type_on_unregistered_path(self):
         td, root = self.make_repo(); self.addCleanup(td.cleanup)
         self.assertIsNone(Validator.expected("topics/custom.yaml"))
@@ -276,6 +383,8 @@ class ValidatorTests(unittest.TestCase):
                 findings = Validator(root).run()
                 codes = {f.code for f in findings if f.severity == "error"}
                 self.assertIn("yaml.document_type_invalid", codes)
+                self.assertNotIn("yaml.schema_version_invalid", codes)
+                self.assertNotIn("yaml.schema_version_unsupported", codes)
 
     def test_fail_unknown_document_types_on_unregistered_path(self):
         td, root = self.make_repo(); self.addCleanup(td.cleanup)
@@ -283,7 +392,10 @@ class ValidatorTests(unittest.TestCase):
         for value in ("definitely_not_canonical", "core_config", "instance_config", "deployment_binding"):
             with self.subTest(document_type=value):
                 write_yaml(root, "topics/custom.yaml", {"schema_version": "0.3", "document_type": value})
-                self.assertIn("yaml.document_type_unknown", error_codes(root))
+                codes = error_codes(root)
+                self.assertIn("yaml.document_type_unknown", codes)
+                self.assertNotIn("yaml.schema_version_invalid", codes)
+                self.assertNotIn("yaml.schema_version_unsupported", codes)
 
     def test_fail_historical_v02_document_types_on_unregistered_path(self):
         td, root = self.make_repo(); self.addCleanup(td.cleanup)

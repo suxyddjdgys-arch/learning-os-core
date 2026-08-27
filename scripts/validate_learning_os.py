@@ -316,7 +316,7 @@ CORE_ALLOWED_FILES={"README.md","requirements-dev.txt",".gitignore","LICENSE"}
 CORE_PROHIBITED_TOP={"learner":"learner state","evidence":"evidence","topics":"topic execution state","execution":"execution state","coordination":"coordination state","runtime":"runtime state incl. private runtime/lineages control"}
 CORE_CONFIG_FORBIDDEN={"project.yaml":"instance-authoritative project configuration","project-instructions.md":"instance-local instructions","project-ui-bootstrap.md":"instance-local UI bootstrap","deployment.yaml":"control-plane deployment binding","instance.yaml":"instance plane configuration"}
 CORE_INSTANCE_DOC_TYPES={"lineage_control","branch_runtime","learning_handoff","conversation_sequence_registry","project_config","deployment_binding","migration_transaction","evidence","learner_background","learner_model","learner_calibration","learner_costs","learner_execution","learner_knowledge","topic_goal","topic_plan","topic_progress","topic_deferred","subtopic_definition","subtopic_plan","subtopic_progress","weekly_execution","daily_execution","execution_session","branch_registry","branch_report","coordination_event","hub_runtime","topic_report"}
-CORE_PROHIBITED_KEYS={"deployment_epoch","active_deployment","write_state","active_deployed_commit","deployed_commit","deployed_core_commit","deployment_binding","migration_authorized","migration_authorization","active_generation","pending_handoff","lineage_control","repository_id","repository_full_name","instance_repository_id","instance_repository_full_name","core_repository_id","secret","secrets","token","tokens","password","api_key","api_token","private_key","credential","credentials"}
+CORE_PROHIBITED_KEYS={"canonical_status","deployment_status","deployment_epoch","active_deployment","write_state","active_deployed_commit","deployed_commit","deployed_core_commit","deployment_binding","migration_authorized","migration_authorization","active_generation","pending_handoff","lineage_control","repository_id","repository_full_name","instance_repository_id","instance_repository_full_name","core_repository_id","secret","secrets","token","tokens","password","api_key","api_token","private_key","credential","credentials"}
 CORE_TOKEN_RE=re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{16,}\b")
 CORE_FIXTURE_DIR="tests/fixtures"
 
@@ -395,8 +395,9 @@ class CoreValidator:
         if not (isinstance(m.get("release"),str) and m["release"].strip()): self.error("core.manifest_release",p,"manifest.release must be a non-empty string")
         sv=m.get("supported_instance_state_schema_versions")
         if not (isinstance(sv,list) and sv and all(isinstance(x,str) and x for x in sv)): self.error("core.instance_schema_support",p,"manifest.supported_instance_state_schema_versions must be a non-empty string list")
-        if m.get("canonical_status")!="noncanonical": self.error("core.canonical_status",p,"manifest.canonical_status must be noncanonical")
-        if m.get("deployment_status")!="not_deployed": self.error("core.deployment_status",p,"manifest.deployment_status must be not_deployed; deployment-active values are forbidden")
+        for field in ("canonical_status","deployment_status"):
+            if field in m:
+                self.error("core.deployment_authority",p,f"manifest.{field} is forbidden: deployment authority belongs exclusively to Runtime-Control")
         t=d.get("time") or {}
         if t.get("timestamp_format")!="iso8601": self.error("core.timestamp_format",p,"time.timestamp_format must be iso8601")
         if t.get("require_reliable_source") is not True: self.error("core.reliable_time",p,"time.require_reliable_source must be true")
@@ -420,9 +421,6 @@ class CoreValidator:
         self.check_domain_bases(sorted(set(bases)&actual))
         r=self.root/"README.md"
         if not r.is_file(): self.error("core.readme","README.md","Core README is required")
-        else:
-            text=r.read_text(encoding="utf-8")
-            if "NONCANONICAL" not in text or "NOT DEPLOYED" not in text: self.error("core.status_marker","README.md","README must state NONCANONICAL and NOT DEPLOYED")
     def check_domain_bases(self,bases):
         for base in bases:
             p=f"domains/{base}/curriculum.yaml"; d=self.yaml_docs.get(p)
@@ -462,10 +460,10 @@ def validate_core(core_snapshot):
 # are NOT implemented here.
 
 INSTANCE_SCHEMA="0.4"
-INSTANCE_ALLOWED_TOP={"config","learner","topics","evidence","execution","runtime","curriculum"}
+INSTANCE_ALLOWED_TOP={"config","learner","topics","evidence","execution","runtime","curriculum",".github"}
 INSTANCE_ALLOWED_FILES={"README.md",".gitignore","LICENSE"}
 # Core 拥有的顶层内容出现在 Instance 快照中即视为越界（fail closed）。
-INSTANCE_CORE_TOP={"protocol":"Core-owned reusable protocol","scripts":"Core-owned validator implementation","tests":"Core-owned tests and fixtures","domains":"Core-owned reusable domain bases","docs":"Core/handoff/acceptance documentation",".github":"Core CI configuration","coordination":"legacy coordination plane outside Instance ownership"}
+INSTANCE_CORE_TOP={"protocol":"Core-owned reusable protocol","scripts":"Core-owned validator implementation","tests":"Core-owned tests and fixtures","domains":"Core-owned reusable domain bases","docs":"Core/handoff/acceptance documentation","coordination":"legacy coordination plane outside Instance ownership"}
 INSTANCE_CONFIG_FORBIDDEN={"core.yaml":"Core plane contract","project.yaml":"legacy instance-authoritative project configuration","project-instructions.md":"instance-local legacy instructions","project-ui-bootstrap.md":"instance-local legacy UI bootstrap","deployment.yaml":"Runtime-Control deployment binding (B2-C)"}
 # Instance 中被拒绝的 Instance/Control 之外的 plane 文档类型
 INSTANCE_FORBIDDEN_DOC_TYPES={"lineage_control":"private project-design Control lineage","project_config":"legacy canonical project configuration","deployment_binding":"Runtime-Control deployment binding","migration_transaction":"Control migration transaction","core_config":"Core plane contract document"}
@@ -573,7 +571,7 @@ class InstanceValidator:
     def collect(self):
         for f in sorted(self.root.rglob("*.yaml")):
             rp=f.relative_to(self.root)
-            if not rp.parts or rp.parts[0]==".git": continue
+            if not rp.parts or rp.parts[0] in (".git",".github"): continue
             p=rp.as_posix()
             try:d=yaml.safe_load(f.read_text(encoding="utf-8"))
             except Exception as e:self.error("yaml.parse",p,str(e));continue
@@ -962,9 +960,9 @@ DEPLOYMENT_TRUST_BOUNDARY_KEYS={
     "credential":"credentials are forbidden in the public contract","credentials":"credentials are forbidden in the public contract",
 }
 # 外部 trusted locator 契约（TRUST ROOT；navigation 字段不参与信任判断）
-LOCATOR_TOP_KEYS={"runtime_control","instance"}
+LOCATOR_TOP_KEYS={"schema_version","document_type","runtime_control","instance"}
 LOCATOR_RC_KEYS={"repository_id","repository","canonical_ref","contract_path"}
-LOCATOR_INSTANCE_KEYS={"repository_id","repository"}
+LOCATOR_INSTANCE_KEYS={"repository_id","repository","canonical_ref"}
 
 class DeploymentValidator:
     """Deterministic validate_deployment(control_snapshot, deployed_core,
@@ -1010,6 +1008,10 @@ class DeploymentValidator:
         if not isinstance(d,dict): self.error("deployment.locator","<trusted-locator>","trusted locator must be a mapping"); return
         unknown=sorted(set(d)-LOCATOR_TOP_KEYS)
         if unknown: self.error("deployment.locator_keys","<trusted-locator>",f"unknown locator keys {unknown}")
+        if "schema_version" in d and d.get("schema_version")!=DEPLOYMENT_SCHEMA:
+            self.error("deployment.locator_schema","<trusted-locator>:schema_version",f"must be {DEPLOYMENT_SCHEMA!r}")
+        if "document_type" in d and d.get("document_type")!="trusted_locator":
+            self.error("deployment.locator_document_type","<trusted-locator>:document_type","must be 'trusted_locator'")
         rc=d.get("runtime_control"); inst=d.get("instance")
         if not isinstance(rc,dict): self.error("deployment.locator_runtime_control","<trusted-locator>:runtime_control","runtime_control block with repository_id is required"); rc={}
         if not isinstance(inst,dict): self.error("deployment.locator_instance","<trusted-locator>:instance","instance block with repository_id is required"); inst={}
@@ -1023,7 +1025,8 @@ class DeploymentValidator:
                     self.error("deployment.locator_field",f"<trusted-locator>:{where}.{nk}","must be a non-empty string (navigation only)")
         if "contract_path" not in rc: rc=dict(rc,contract_path="deployment.yaml")
         if "canonical_ref" not in rc: rc=dict(rc,canonical_ref="main")
-        self.locator={"runtime_control":rc,"instance":inst}
+        if "canonical_ref" not in inst: inst=dict(inst,canonical_ref="main")
+        self.locator={"schema_version":d.get("schema_version",DEPLOYMENT_SCHEMA),"document_type":d.get("document_type","trusted_locator"),"runtime_control":rc,"instance":inst}
     # --- deployment contract：结构化 allowlist + fail closed ---
     def load_contract(self):
         self.contract=None; self.contract_path=None

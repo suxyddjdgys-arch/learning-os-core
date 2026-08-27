@@ -1,0 +1,306 @@
+schema_version: "0.1"
+document_type: curriculum
+updated_at: 2026-08-19T21:26+08:00
+
+domain:
+  id: modern-language-models
+  title: Modern Language Models
+  aliases:
+    - llm
+    - large_language_models
+
+curriculum_version: "0.2"
+
+capability_profiles:
+  conceptual_core:
+    conceptual_structure: expected
+    explanation: expected
+    standard_application: expected
+    transfer: useful
+    formal_derivation: useful
+  technical_depth:
+    conceptual_structure: expected
+    explanation: expected
+    standard_application: expected
+    transfer: expected
+    formal_derivation: expected
+
+nodes:
+  language_modeling.next_token_prediction:
+    title: Language modeling as next-token prediction
+    kind: concept
+    capability_profile: conceptual_core
+  representation.tokens_and_context:
+    title: Tokens, vocabulary, context, and embeddings
+    kind: representation
+    capability_profile: conceptual_core
+  probability.logits_softmax_cross_entropy:
+    title: Logits, softmax, likelihood, and cross-entropy
+    kind: concept
+    capability_profile: technical_depth
+  transformer.architecture_overview:
+    title: Transformer architecture and residual stream
+    kind: representation
+    capability_profile: conceptual_core
+  transformer.self_attention:
+    title: Self-attention, Q/K/V, and causal masking
+    kind: concept
+    capability_profile: technical_depth
+  transformer.position_information:
+    title: Positional information and context structure
+    kind: concept
+    capability_profile: technical_depth
+  transformer.mlp_norm_residual:
+    title: MLP blocks, normalization, and residual connections
+    kind: concept
+    capability_profile: technical_depth
+  training.pretraining:
+    title: Pretraining data, objective, and optimization
+    kind: procedure
+    capability_profile: conceptual_core
+  training.scaling_and_compute:
+    title: Scaling, compute, data, and model size tradeoffs
+    kind: concept
+    capability_profile: conceptual_core
+  posttraining.supervised_finetuning:
+    title: Supervised fine-tuning and instruction tuning
+    kind: procedure
+    capability_profile: conceptual_core
+  posttraining.preference_learning:
+    title: Preference learning, RLHF, and direct preference optimization
+    kind: concept
+    capability_profile: technical_depth
+  inference.decoding:
+    title: Autoregressive decoding and sampling
+    kind: procedure
+    capability_profile: conceptual_core
+  inference.kv_cache_and_serving:
+    title: KV cache, batching, latency, and serving
+    kind: concept
+    capability_profile: technical_depth
+  architectures.moe:
+    title: Mixture-of-Experts models
+    kind: concept
+    capability_profile: technical_depth
+  reasoning.inference_time_compute:
+    title: Reasoning and inference-time compute
+    kind: concept
+    capability_profile: conceptual_core
+  retrieval.rag:
+    title: Retrieval-augmented generation
+    kind: application
+    capability_profile: conceptual_core
+  tools.agents:
+    title: Tool use, agents, and external state
+    kind: application
+    capability_profile: conceptual_core
+  evaluation.capabilities:
+    title: Evaluation, benchmarks, and capability measurement
+    kind: skill
+    capability_profile: conceptual_core
+  safety.alignment:
+    title: Alignment, robustness, and safety
+    kind: concept
+    capability_profile: conceptual_core
+  interpretability.mechanisms:
+    title: Mechanistic and behavioral interpretability
+    kind: skill
+    capability_profile: technical_depth
+  multimodal.foundation:
+    title: Multimodal foundation models
+    kind: concept
+    capability_profile: conceptual_core
+  systems.training_and_efficiency:
+    title: Distributed training, precision, quantization, and efficiency
+    kind: skill
+    capability_profile: technical_depth
+  research.paper_reading:
+    title: Reading and critiquing language-model research
+    kind: skill
+    capability_profile: conceptual_core
+
+edges:
+  - id: edge_next_token_to_tokens
+    from: language_modeling.next_token_prediction
+    to: representation.tokens_and_context
+    relation: motivates
+    strength: medium
+  - id: edge_tokens_to_logits
+    from: representation.tokens_and_context
+    to: probability.logits_softmax_cross_entropy
+    relation: supports
+    strength: medium
+  - id: edge_logits_to_pretraining
+    from: probability.logits_softmax_cross_entropy
+    to: training.pretraining
+    relation: requires
+    strength: strong
+  - id: edge_tokens_to_architecture
+    from: representation.tokens_and_context
+    to: transformer.architecture_overview
+    relation: supports
+    strength: medium
+  - id: edge_architecture_to_attention
+    from: transformer.architecture_overview
+    to: transformer.self_attention
+    relation: extends
+    strength: strong
+  - id: edge_architecture_to_position
+    from: transformer.architecture_overview
+    to: transformer.position_information
+    relation: extends
+    strength: strong
+  - id: edge_architecture_to_mlp_norm_residual
+    from: transformer.architecture_overview
+    to: transformer.mlp_norm_residual
+    relation: extends
+    strength: strong
+  - id: edge_attention_to_pretraining
+    from: transformer.self_attention
+    to: training.pretraining
+    relation: supports
+    strength: medium
+  - id: edge_pretraining_to_scaling
+    from: training.pretraining
+    to: training.scaling_and_compute
+    relation: extends
+    strength: medium
+  - id: edge_pretraining_to_sft
+    from: training.pretraining
+    to: posttraining.supervised_finetuning
+    relation: extends
+    strength: strong
+  - id: edge_sft_to_preference_learning
+    from: posttraining.supervised_finetuning
+    to: posttraining.preference_learning
+    relation: extends
+    strength: strong
+  - id: edge_pretraining_to_decoding
+    from: training.pretraining
+    to: inference.decoding
+    relation: applies_to
+    strength: strong
+  - id: edge_attention_to_kv_cache
+    from: transformer.self_attention
+    to: inference.kv_cache_and_serving
+    relation: applies_to
+    strength: strong
+  - id: edge_scaling_to_moe
+    from: training.scaling_and_compute
+    to: architectures.moe
+    relation: motivates
+    strength: medium
+  - id: edge_decoding_to_reasoning
+    from: inference.decoding
+    to: reasoning.inference_time_compute
+    relation: extends
+    strength: medium
+  - id: edge_next_token_to_rag
+    from: language_modeling.next_token_prediction
+    to: retrieval.rag
+    relation: applies_to
+    strength: weak
+  - id: edge_decoding_to_agents
+    from: inference.decoding
+    to: tools.agents
+    relation: supports
+    strength: medium
+  - id: edge_preference_learning_to_safety
+    from: posttraining.preference_learning
+    to: safety.alignment
+    relation: integrates_with
+    strength: medium
+  - id: edge_pretraining_to_evaluation
+    from: training.pretraining
+    to: evaluation.capabilities
+    relation: motivates
+    strength: medium
+  - id: edge_architecture_to_interpretability
+    from: transformer.architecture_overview
+    to: interpretability.mechanisms
+    relation: supports
+    strength: medium
+  - id: edge_architecture_to_multimodal
+    from: transformer.architecture_overview
+    to: multimodal.foundation
+    relation: generalizes
+    strength: medium
+  - id: edge_scaling_to_systems
+    from: training.scaling_and_compute
+    to: systems.training_and_efficiency
+    relation: integrates_with
+    strength: medium
+  - id: edge_evaluation_to_paper_reading
+    from: evaluation.capabilities
+    to: research.paper_reading
+    relation: supports
+    strength: medium
+  - id: edge_safety_to_paper_reading
+    from: safety.alignment
+    to: research.paper_reading
+    relation: supports
+    strength: weak
+  - id: edge_systems_to_paper_reading
+    from: systems.training_and_efficiency
+    to: research.paper_reading
+    relation: supports
+    strength: weak
+
+tracks:
+  core_mechanisms:
+    description: Core language-model and Transformer mechanisms.
+    members:
+      - language_modeling.next_token_prediction
+      - representation.tokens_and_context
+      - probability.logits_softmax_cross_entropy
+      - transformer.architecture_overview
+      - transformer.self_attention
+      - transformer.position_information
+      - transformer.mlp_norm_residual
+    suggested_sequence:
+      - language_modeling.next_token_prediction
+      - representation.tokens_and_context
+      - probability.logits_softmax_cross_entropy
+      - transformer.architecture_overview
+  training_and_alignment:
+    description: Pretraining, post-training, scaling, and alignment.
+    members:
+      - training.pretraining
+      - training.scaling_and_compute
+      - posttraining.supervised_finetuning
+      - posttraining.preference_learning
+      - safety.alignment
+    suggested_sequence: []
+  inference_and_systems:
+    description: Inference behavior and systems implementation.
+    members:
+      - inference.decoding
+      - inference.kv_cache_and_serving
+      - architectures.moe
+      - systems.training_and_efficiency
+    suggested_sequence: []
+  applications_and_reasoning:
+    description: Reasoning, retrieval, tools, and multimodality.
+    members:
+      - reasoning.inference_time_compute
+      - retrieval.rag
+      - tools.agents
+      - multimodal.foundation
+    suggested_sequence: []
+  research_literacy:
+    description: Evaluation, interpretability, and research reading.
+    members:
+      - evaluation.capabilities
+      - interpretability.mechanisms
+      - research.paper_reading
+    suggested_sequence: []
+
+entry_paths:
+  default:
+    description: Start from the language-modeling objective and build toward Transformer mechanisms.
+    preferred_when: []
+    starting_nodes:
+      - language_modeling.next_token_prediction
+
+# Node-ID aliases only. Domain nicknames are stored in domain.aliases.
+aliases: {}

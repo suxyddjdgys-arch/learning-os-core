@@ -4,8 +4,8 @@
 # Core owns reusable product semantics only. Copy-by-value source for the
 # reusable behavior blocks is the legacy V0.3 production configuration.
 #
-# This Core tree is NONCANONICAL and NOT DEPLOYED. Canonical production
-# remains suxyddjdgys-arch/learning-os release 0.3.2, topology LEGACY.
+# Deployment status is deliberately absent from this contract. Runtime-Control
+# alone decides whether an exact Core commit is deployed.
 #
 # Forbidden everywhere in the Core plane (enforced by validate_core):
 #   real learner state, real Evidence, learner execution/Branch runtime,
@@ -22,12 +22,11 @@ product:
   name: Learning OS
 
 manifest:
-  release: "0.4.0-candidate"
+  release: "0.4.0"
   # Version-axis glossary (V0.4-B2-B, G8 decisions D1/D3):
   #   schema_version (top level)      = Core config CONTRACT schema (this
   #                                     document; V0.4-only contract -> 0.4).
-  #   release                         = Core release axis (candidate; becomes
-  #                                     0.4.0 only at actual promotion).
+  #   release                         = Core product release axis.
   #   supported_instance_state_schema_versions
   #                                   = learner/Topic/Evidence/runtime STATE
   #                                     artifact schema versions this Core
@@ -38,9 +37,8 @@ manifest:
   # state document's own schema_version and constrained by the supported
   # list above. No Core manifest field declares or changes that axis.
   supported_instance_state_schema_versions:
+    - "0.1"
     - "0.3"
-  canonical_status: noncanonical
-  deployment_status: not_deployed
 
 # Reusable modes / roles / naming semantics (copy-by-value from legacy V0.3).
 chat_routing:
@@ -223,6 +221,7 @@ protocol:
   # V0.4-B2-C deployment bootstrap trust model（授权的必要伴随修改：新
   # protocol 文档必须被本清单路由，否则 validate_core fail closed）。
   runtime_bootstrap: protocol/runtime-bootstrap.md
+  deployment_runtime: protocol/deployment-runtime.md
   new_topic_start: protocol/new-topic-start.md
   conversation_naming: protocol/conversation-naming-policy.md
   evidence_classification: protocol/evidence-classification.md
@@ -254,4 +253,5 @@ governance:
 domains:
   reusable_bases:
     - _template
+    - modern-language-models
   template: domains/_template/curriculum.yaml

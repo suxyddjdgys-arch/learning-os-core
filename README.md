@@ -1,16 +1,11 @@
 # Learning OS — Core
 
-Status: NONCANONICAL V0.4 CANDIDATE — NOT DEPLOYED
+Release: 0.4.0
 
-This repository is the candidate Core plane for the Learning OS V0.4
-separation architecture. It is a staging target only and has no current
-production authority.
-
-Canonical production remains:
-
-suxyddjdgys-arch/learning-os
-release 0.3.2
-topology LEGACY
+This repository is the reusable Core plane for the Learning OS V0.4
+separation architecture. Core content never self-asserts deployment status:
+the public Runtime-Control contract is the sole authority that deploys an
+exact Core commit.
 
 The Core plane owns reusable product semantics only: the Core contract
 (`config/core.yaml`, schema 0.4), protocol documents, the deterministic

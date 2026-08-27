@@ -13,6 +13,8 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
+from io import BytesIO
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Callable, Protocol
@@ -326,6 +328,21 @@ class GitHubApiProvider:
         except (urllib.error.URLError, TimeoutError, UnicodeError, json.JSONDecodeError) as exc:
             raise ResolutionError(f"GitHub request failed: {exc.__class__.__name__}") from None
 
+    def _request_bytes(self, path: str) -> bytes:
+        request = urllib.request.Request(self.api_url + path, method="GET")
+        request.add_header("Accept", "application/vnd.github+json")
+        request.add_header("X-GitHub-Api-Version", "2022-11-28")
+        request.add_header("User-Agent", "learning-os-v0.4-runtime")
+        if self.token:
+            request.add_header("Authorization", f"Bearer {self.token}")
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                return response.read()
+        except urllib.error.HTTPError as exc:
+            raise ResolutionError(f"GitHub archive request failed ({exc.code})") from None
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise ResolutionError(f"GitHub archive request failed: {exc.__class__.__name__}") from None
+
     def _repo(self, repository_id: int) -> dict:
         data = self._request("GET", f"/repositories/{repository_id}")
         if not isinstance(data, dict) or data.get("id") != repository_id:
@@ -353,25 +370,28 @@ class GitHubApiProvider:
         repo = self._repo(repository_id)
         full_name = _nonempty(repo.get("full_name"), "repository.full_name")
         commit = self._commit(full_name, ref)
-        tree = self._request("GET", f"/repos/{full_name}/git/trees/{commit}?recursive=1")
-        if not isinstance(tree, dict) or tree.get("truncated") is True:
-            raise ResolutionError("GitHub tree is unavailable or truncated")
+        archive = self._request_bytes(f"/repos/{full_name}/zipball/{commit}")
         td = tempfile.TemporaryDirectory(prefix="learning-os-snapshot-")
         self._tempdirs.append(td)
         root = Path(td.name)
-        for entry in tree.get("tree", []):
-            if not isinstance(entry, dict) or entry.get("type") != "blob":
-                continue
-            if entry.get("mode") != "100644":
-                raise ResolutionError("snapshot contains a symlink, submodule, or executable blob")
-            blob = self._request("GET", f"/repos/{full_name}/git/blobs/{entry.get('sha')}")
-            if not isinstance(blob, dict) or blob.get("encoding") != "base64":
-                raise ResolutionError("GitHub blob encoding is unsupported")
-            try:
-                content = base64.b64decode(blob["content"], validate=False)
-            except (KeyError, TypeError, ValueError):
-                raise ResolutionError("GitHub blob content is malformed") from None
-            self._safe_output(root, _nonempty(entry.get("path"), "tree.path")).write_bytes(content)
+        try:
+            with zipfile.ZipFile(BytesIO(archive)) as bundle:
+                files = [entry for entry in bundle.infolist() if not entry.is_dir()]
+                prefixes = {PurePosixPath(entry.filename).parts[0] for entry in files}
+                if len(prefixes) != 1:
+                    raise ResolutionError("GitHub archive has an ambiguous root")
+                prefix = prefixes.pop()
+                for entry in files:
+                    pure = PurePosixPath(entry.filename)
+                    if len(pure.parts) < 2 or pure.parts[0] != prefix:
+                        raise ResolutionError("GitHub archive path is malformed")
+                    unix_mode = (entry.external_attr >> 16) & 0o170000
+                    if unix_mode not in (0, 0o100000):
+                        raise ResolutionError("snapshot archive contains a non-regular file")
+                    rel = PurePosixPath(*pure.parts[1:]).as_posix()
+                    self._safe_output(root, rel).write_bytes(bundle.read(entry))
+        except zipfile.BadZipFile:
+            raise ResolutionError("GitHub archive is not a valid ZIP") from None
         return MaterializedRepository(root, repository_id, commit, full_name)
 
     def read_text(self, repository_id: int, ref: str, path: str) -> tuple[str, str, str]:

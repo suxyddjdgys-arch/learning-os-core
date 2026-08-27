@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -103,11 +102,16 @@ class RuntimeAdapterTests(unittest.TestCase):
         self.addCleanup(inst_td.cleanup)
         self.control = Path(rc_td.name)
         self.instance = Path(inst_td.name)
-        shutil.copytree(
-            ROOT.parent / "learning-os-instance",
-            self.instance,
-            dirs_exist_ok=True,
-            ignore=shutil.ignore_patterns(".git"),
+        (self.instance / "config").mkdir(parents=True)
+        (self.instance / "README.md").write_text("# Synthetic Instance\n", encoding="utf-8")
+        (self.instance / "config/instance.yaml").write_text(
+            yaml.safe_dump({
+                "schema_version": "0.4",
+                "document_type": "instance_config",
+                "product": {"id": "learning-os"},
+                "instance": {"display_timezone": "Asia/Shanghai"},
+            }, sort_keys=False),
+            encoding="utf-8",
         )
         self.provider = FakeProvider(self.control, self.instance)
 

@@ -93,6 +93,14 @@ class DeploymentValidationTests(unittest.TestCase):
         })
         self.core_root = CORE_REPO_ROOT
 
+    def symlink_or_skip(self, link: Path, target: Path | str, *, target_is_directory: bool = False) -> None:
+        try:
+            link.symlink_to(target, target_is_directory=target_is_directory)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 1314:
+                self.skipTest("Windows host does not grant symbolic-link creation privilege")
+            raise
+
     # ---- 组装 helpers ----
 
     def publish(self, c: dict | None = None, *, path: str = "deployment.yaml") -> None:
@@ -202,7 +210,10 @@ class DeploymentValidationTests(unittest.TestCase):
 
     def test_fail_contract_path_absolute_existing_external_file(self):
         outside = self.external_contract()
-        self.assertIn("deployment.contract_path_absolute", self.contract_path_errors(str(outside)))
+        self.assertTrue(
+            {"deployment.contract_path_absolute", "deployment.contract_path_windows_drive"}
+            & self.contract_path_errors(str(outside))
+        )
 
     def test_fail_contract_path_traversal_existing_external_file(self):
         outside = self.external_contract()
@@ -226,17 +237,17 @@ class DeploymentValidationTests(unittest.TestCase):
 
     def test_fail_contract_path_symlink_outside(self):
         outside = self.external_contract()
-        (self.control / "link.yaml").symlink_to(outside)
+        self.symlink_or_skip(self.control / "link.yaml", outside)
         self.assertIn("deployment.contract_path_symlink", self.contract_path_errors("link.yaml"))
 
     def test_fail_contract_path_symlink_inside(self):
         write_yaml(self.control, "real/deployment.yaml", contract())
-        (self.control / "link.yaml").symlink_to(Path("real/deployment.yaml"))
+        self.symlink_or_skip(self.control / "link.yaml", Path("real/deployment.yaml"))
         self.assertIn("deployment.contract_path_symlink", self.contract_path_errors("link.yaml"))
 
     def test_fail_contract_path_symlink_directory_component(self):
         write_yaml(self.control, "real-contracts/deployment.yaml", contract())
-        (self.control / "contracts").symlink_to("real-contracts", target_is_directory=True)
+        self.symlink_or_skip(self.control / "contracts", "real-contracts", target_is_directory=True)
         self.assertIn("deployment.contract_path_symlink", self.contract_path_errors("contracts/deployment.yaml"))
 
     def test_instance_state_schema_supported_pass(self):

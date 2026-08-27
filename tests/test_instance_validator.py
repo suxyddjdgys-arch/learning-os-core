@@ -84,10 +84,8 @@ def make_core(root: Path, domain: str = DOMAIN, version: str = BASE_VERSION,
         "document_type": "core_config",
         "product": {"id": "learning-os", "name": "Learning OS"},
         "manifest": {
-            "release": "0.4.0-candidate",
+            "release": "0.4.0",
             "supported_instance_state_schema_versions": state_schemas if state_schemas is not None else ["0.3"],
-            "canonical_status": "noncanonical",
-            "deployment_status": "not_deployed",
         },
     })
     write_yaml(root, f"domains/{domain}/curriculum.yaml", core_curriculum(domain, version))

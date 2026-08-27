@@ -13,7 +13,7 @@ CORE_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 CORE_README = """# Learning OS — Core
 
-Status: NONCANONICAL V0.4 CANDIDATE — NOT DEPLOYED
+Release: 0.4.0
 """
 
 
@@ -35,12 +35,10 @@ def core_config(protocol: dict | None = None, reusable_bases: list | None = None
         "updated_at": "2026-08-24T09:30:55+08:00",
         "product": {"id": "learning-os", "name": "Learning OS"},
         "manifest": {
-            "release": "0.4.0-candidate",
+            "release": "0.4.0",
             # B2-B: manifest.artifact_schema 已移除；state schema 轴改由
             # supported_instance_state_schema_versions 声明（G8 D1/D3）。
             "supported_instance_state_schema_versions": ["0.3"],
-            "canonical_status": "noncanonical",
-            "deployment_status": "not_deployed",
         },
         "time": {
             "timestamp_format": "iso8601",
@@ -81,6 +79,14 @@ def core_errors(root: Path) -> set[str]:
 
 
 class CoreValidatorTests(unittest.TestCase):
+    def symlink_or_skip(self, link: Path, target: Path | str, *, target_is_directory: bool = False) -> None:
+        try:
+            link.symlink_to(target, target_is_directory=target_is_directory)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 1314:
+                self.skipTest("Windows host does not grant symbolic-link creation privilege")
+            raise
+
     def make_snapshot(self, config: dict | None = None, readme: str | None = CORE_README, template: bool = True) -> Path:
         td = tempfile.TemporaryDirectory()
         self.addCleanup(td.cleanup)
@@ -180,7 +186,7 @@ class CoreValidatorTests(unittest.TestCase):
     def test_fail_deployment_active_values(self):
         config = core_config()
         config["manifest"]["deployment_status"] = "active"
-        self.assertIn("core.deployment_status", core_errors(self.make_snapshot(config=config)))
+        self.assertIn("core.deployment_authority", core_errors(self.make_snapshot(config=config)))
 
     def test_fail_deployment_epoch_and_write_state_keys(self):
         config = core_config()
@@ -190,7 +196,7 @@ class CoreValidatorTests(unittest.TestCase):
     def test_fail_canonical_status_drift(self):
         config = core_config()
         config["manifest"]["canonical_status"] = "canonical"
-        self.assertIn("core.canonical_status", core_errors(self.make_snapshot(config=config)))
+        self.assertIn("core.deployment_authority", core_errors(self.make_snapshot(config=config)))
 
     # ===== Negative: contract/schema semantics =====
 
@@ -281,13 +287,13 @@ class CoreValidatorTests(unittest.TestCase):
     def test_fail_protocol_route_symlink_inside_snapshot(self):
         root = self.make_snapshot(config=core_config(protocol={"runtime_core": "protocol/link.route"}))
         write_file(root, "protocol/inside-target.route", "inside\n")
-        (root / "protocol/link.route").symlink_to("inside-target.route")
+        self.symlink_or_skip(root / "protocol/link.route", "inside-target.route")
         self.assertIn("core.protocol_route", core_errors(root))
 
     def test_fail_protocol_route_symlink_outside_snapshot(self):
         root = self.make_snapshot(config=core_config(protocol={"runtime_core": "protocol/link.route"}))
         outside = self.external_file(root, name="outside.route", text="outside\n")
-        (root / "protocol/link.route").symlink_to(outside)
+        self.symlink_or_skip(root / "protocol/link.route", outside)
         self.assertIn("core.protocol_route", core_errors(root))
 
     def test_fail_protocol_route_symlink_directory_component(self):
@@ -296,7 +302,7 @@ class CoreValidatorTests(unittest.TestCase):
         self.addCleanup(td.cleanup)
         outside_dir = Path(td.name)
         (outside_dir / "outside.route").write_text("outside\n", encoding="utf-8")
-        (root / "protocol/linked").symlink_to(outside_dir, target_is_directory=True)
+        self.symlink_or_skip(root / "protocol/linked", outside_dir, target_is_directory=True)
         self.assertIn("core.protocol_route", core_errors(root))
 
     def test_fail_unrouted_protocol_document(self):
@@ -304,9 +310,9 @@ class CoreValidatorTests(unittest.TestCase):
         write_file(root, "protocol/orphan.md", "# unrouted\n")
         self.assertIn("core.protocol_orphan", core_errors(root))
 
-    def test_fail_missing_status_marker(self):
-        root = self.make_snapshot(readme="# Learning OS — Core\n\nStatus: NONCANONICAL V0.4 CANDIDATE\n")
-        self.assertIn("core.status_marker", core_errors(root))
+    def test_readme_does_not_own_deployment_status(self):
+        root = self.make_snapshot(readme="# Learning OS — Core\n\nRelease: 0.4.0\n")
+        self.assertNotIn("core.status_marker", core_errors(root))
 
     def test_fail_domain_identity_mismatch(self):
         root = self.make_snapshot()

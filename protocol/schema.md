@@ -137,7 +137,7 @@ Current `InstanceValidator` path dispatch does not yet conform to this complete 
 - **Domain**: reusable objective knowledge namespace. A Domain may own `curriculum.yaml`.
 - **Topic**: learner-specific high-level learning project/goal. A Topic may use one or more Domains.
 - **Subtopic**: coherent learner-specific unit inside one Topic, materialized only when useful.
-- **Role**: orthogonal chat function (`hub`, `main`, `practice`, `deep_dive`.
+- **Role**: orthogonal chat function (`hub`, `main`, `practice`, `deep_dive`).
 
 A curriculum node is not a Subtopic. A Subtopic is not a chat. Topic and Domain MAY share the same slug because they are different namespaces.
 

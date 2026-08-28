@@ -68,6 +68,70 @@ V0.3 canonical document types:
 
 Historical V0.2 learner-project types `domain_goal`, `domain_plan`, `domain_state`, and `domain_deferred` may remain in Git history or historical handoff material only. Current canonical runtime does not bootstrap learner-project state from those document types or storage paths.
 
+### 2.1 V0.4 split Instance canonical storage registry
+
+This section is the complete physical/canonical-home registry for YAML documents that are allowed to be canonical in a V0.4 **split Instance**. It is independent of any legacy monolithic storage registry. For legacy learner/runtime artifacts that remain Instance-owned under V0.4, split migration preserves the existing physical storage family unless this table explicitly defines a V0.4-only replacement or addition. This settlement therefore makes the split storage contract explicit; it does not redesign learner-state semantics.
+
+The registry contains 28 allowed split Instance `document_type` values and 29 path-family rows because `learning_handoff` has two authorized families.
+
+| `document_type` | canonical split Instance storage family | settlement basis |
+| --- | --- | --- |
+| `instance_config` | `config/instance.yaml` | V0.4 split-only contract |
+| `curriculum_extension` | `curriculum/extensions/<extension-file>.yaml` | V0.4 split-only additive overlay |
+| `curriculum` | `curriculum/local/<domain>/curriculum.yaml` | V0.4 Instance-local Domain curriculum; Core reusable curricula remain under Core `domains/<domain>/curriculum.yaml` |
+| `conversation_sequence_registry` | `runtime/ui/conversation-sequences.yaml` | preserved Instance-owned runtime metadata family |
+| `learner_background` | `learner/background.yaml` | preserved Instance-owned learner family |
+| `learner_model` | `learner/model.yaml` | preserved Instance-owned learner family |
+| `learner_calibration` | `learner/calibration.yaml` | preserved Instance-owned learner family |
+| `learner_costs` | `learner/costs.yaml` | preserved Instance-owned learner family |
+| `learner_execution` | `learner/execution.yaml` | preserved Instance-owned learner family |
+| `learner_knowledge` | `learner/knowledge/<domain>.yaml` | preserved Instance-owned learner family |
+| `topic_goal` | `topics/<topic>/goal.yaml` | preserved Instance-owned Topic family |
+| `topic_plan` | `topics/<topic>/plan.yaml` | preserved Instance-owned Topic family |
+| `topic_progress` | `topics/<topic>/progress.yaml` | preserved Instance-owned Topic family |
+| `topic_deferred` | `topics/<topic>/deferred.yaml` | preserved Instance-owned Topic family |
+| `subtopic_definition` | `topics/<topic>/subtopics/<subtopic>/definition.yaml` | preserved Instance-owned Subtopic family |
+| `subtopic_plan` | `topics/<topic>/subtopics/<subtopic>/plan.yaml` | preserved Instance-owned Subtopic family |
+| `subtopic_progress` | `topics/<topic>/subtopics/<subtopic>/progress.yaml` | preserved Instance-owned Subtopic family |
+| `weekly_execution` | `execution/weekly/<window-id>.yaml` | preserved Instance-owned execution family |
+| `daily_execution` | `topics/<topic>/execution/daily/<date>.yaml` | preserved Instance-owned execution family |
+| `execution_session` | `topics/<topic>/execution/sessions/<session-id>.yaml` | preserved Instance-owned immutable execution family |
+| `branch_registry` | `topics/<topic>/coordination/branches.yaml` | preserved Instance-owned coordination family |
+| `branch_runtime` | `topics/<topic>/coordination/branches/<branch>/runtime.yaml` | preserved Instance-owned coordination family |
+| `branch_report` | `topics/<topic>/coordination/branches/<branch>/report.yaml` | preserved Instance-owned projection family |
+| `coordination_event` | `topics/<topic>/coordination/events/<event-id>.yaml` | preserved Instance-owned immutable coordination family |
+| `hub_runtime` | `coordination/hub/runtime.yaml` | preserved global Hub runtime/projection family, explicitly authorized in split Instance |
+| `topic_report` | `topics/<topic>/coordination/topic-report.yaml` | preserved Instance-owned Topic-to-Hub projection family |
+| `learning_handoff` | `topics/<topic>/handoffs/<lineage-id>/C<from-sequence>-to-C<to-sequence>.yaml` | preserved Topic-level learning Branch continuity family |
+| `learning_handoff` | `topics/<topic>/subtopics/<subtopic>/handoffs/<lineage-id>/C<from-sequence>-to-C<to-sequence>.yaml` | preserved Subtopic-bound learning Branch continuity family |
+| `evidence` | `evidence/<evidence-id>.yaml` | preserved flat immutable Evidence family |
+
+Every YAML document collected as split Instance canonical state **MUST** match exactly one registered storage family above before document semantics can be accepted:
+
+- `match_count == 0` => invalid and MUST fail closed;
+- `match_count > 1` => registry ambiguity and MUST fail closed;
+- `match_count == 1` and declared `document_type` differs from the registered type => invalid and MUST fail closed.
+
+A known/allowed `document_type` does not authorize an arbitrary path. In particular, a validator MUST NOT interpret “no registered family matched” as permission to continue silently.
+
+All placeholder forms in this table use POSIX repository-relative syntax. Each of `<topic>`, `<subtopic>`, `<branch>`, `<lineage-id>`, `<event-id>`, `<evidence-id>`, `<session-id>`, `<date>`, `<window-id>`, `<extension-file>`, and `<domain>` represents exactly one non-empty repository path segment. A placeholder value MUST NOT contain `/`, MUST NOT be `.` or `..`, and MUST NOT create an additional storage level. The hardened filesystem-containment resolver remains a separate validation concern; these rules define canonical family syntax.
+
+The two Learning Handoff families are both canonical in split Instance. Their `C<from-sequence>-to-C<to-sequence>.yaml` filename is canonical **navigation** identity for the physical handoff artifact, not lineage-generation authority. Generation/transition authority continues to come from the handoff document's `lineage_id`, `from_generation`, and `to_generation`; validators and runtimes MUST NOT infer generation numbers from the physical `Cxx` filename. This storage settlement does not change Learning Handoff transition-identity semantics.
+
+In split Instance, top-level `coordination/` is an authorized Instance storage root **only for registered split Instance coordination families**. The currently registered top-level family is exactly `coordination/hub/runtime.yaml` for `hub_runtime`. This authorization does not create a general arbitrary `coordination/**` namespace; any other YAML path under top-level `coordination/` has zero registry matches and MUST fail closed unless a later schema revision explicitly registers another family.
+
+The Evidence family is flat: `evidence/<evidence-id>.yaml`; nested Evidence directories are not an authorized storage family. Existing Evidence identity and immutability semantics continue unchanged. This settlement does not create a new semantic Evidence identity rule; where an existing identity check binds filename stem to document `id`, that invariant continues to apply. Ordinary runtime MUST NOT rename or relocate immutable Evidence merely to reorganize storage.
+
+Sparse or currently unmaterialized document types still retain their canonical storage contract. Absence of `daily_execution`, `branch_report`, `coordination_event`, `hub_runtime`, `topic_report`, a handoff family, or any other lazy type does not remove or weaken its registry entry.
+
+Split Instance storage registration is a physical/canonical-home contract and does **not** independently define accepted Instance state `schema_version` values. Storage-family authorization and schema-version authorization are separate checks. V0.4 Instance state-version compatibility remains governed by the deployed Core manifest and split compatibility contract (`manifest.supported_instance_state_schema_versions`); this section does not modify that field or the state-version axis.
+
+The split Instance registry does **not** authorize `project_config`, `lineage_control`, `deployment_binding`, `migration_transaction`, or `core_config` as Instance canonical state. Core protocols/scripts/tests/reusable `domains/**` remain Core-plane material; the Runtime-Control deployment contract remains in Runtime-Control; private project-design lineage remains in Private Control.
+
+Repository operational metadata is outside this canonical YAML state registry. `.github/workflows/*.yml` and `.github/workflows/*.yaml` are operational metadata and do not need to match a split canonical state family; split Instance canonical-document collection SHOULD continue to exclude `.github/**`. `README.md`, `.gitignore`, and `LICENSE` are likewise not canonical YAML state families.
+
+Current `InstanceValidator` path dispatch does not yet conform to this complete registry. That implementation debt is intentional at this specification-only settlement boundary and requires a separate implementation package; the normative registry above MUST NOT be weakened merely to match current code.
+
 ## 3. Core ontology
 
 - **Domain**: reusable objective knowledge namespace. A Domain may own `curriculum.yaml`.

@@ -286,19 +286,19 @@ class DeploymentValidationTests(unittest.TestCase):
         self.assertIn("deployment.epoch", self.errors(contract(deployment={"epoch": "2"})))
 
     def test_fail_unknown_write_state(self):
-        self.assertIn("deployment.write_state", self.errors(contract(deployment={"write_state": "paused")))
+        self.assertIn("deployment.write_state", self.errors(contract(deployment={"write_state": "paused"})))
 
     def test_fail_legacy_topology(self):
-        self.assertIn("deployment.topology", self.errors(contract(deployment={"topology": "legacy")))
+        self.assertIn("deployment.topology", self.errors(contract(deployment={"topology": "legacy"})))
 
     def test_fail_non_integer_core_id(self):
         self.assertIn("deployment.core_repository_id", self.errors(contract(core={"repository_id": "1343815302"})))
 
     def test_fail_abbreviated_commit(self):
-        self.assertIn("deployment.core_commit", self.errors(contract(core={"commit": "fb7b2aa")))
+        self.assertIn("deployment.core_commit", self.errors(contract(core={"commit": "fb7b2aa"})))
 
     def test_fail_branch_name_as_commit(self):
-        self.assertIn("deployment.core_commit", self.errors(contract(core={"commit": "main")))
+        self.assertIn("deployment.core_commit", self.errors(contract(core={"commit": "main"})))
 
     # ===== Negative: 身份 / provenance fail closed =====
 

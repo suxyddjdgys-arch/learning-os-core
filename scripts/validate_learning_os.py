@@ -119,6 +119,45 @@ def resolve_repository_relative_file(snapshot_root:Path,ref):
     if mode is None or not stat.S_ISREG(mode): return None,"not_file","referenced target must be an ordinary regular file"
     return resolved,None,None
 
+def _generation_number(value):
+    if isinstance(value,int) and not isinstance(value,bool) and value>=1: return value
+    if isinstance(value,str) and re.fullmatch(r"[1-9][0-9]*",value): return int(value)
+    return None
+
+def _generation_record(generations,generation):
+    if not isinstance(generations,dict) or not isinstance(generation,int): return None
+    record=generations.get(generation,generations.get(str(generation)))
+    return record if isinstance(record,dict) else None
+
+def learning_handoff_identity_mismatches(runtime,generation_key,generation_record,handoff):
+    """Return deterministic Branch-transition mismatches for one handoff_ref."""
+    mismatches=[]
+    source=_generation_number(generation_key)
+    if source is None:
+        mismatches.append(f"referencing generation key {generation_key!r} is not a positive integer generation")
+    for field in ("topic","branch_id","lineage_id"):
+        if handoff.get(field)!=runtime.get(field):
+            mismatches.append(f"{field} {handoff.get(field)!r} != Branch runtime {runtime.get(field)!r}")
+    if source is not None and handoff.get("from_generation")!=source:
+        mismatches.append(f"from_generation {handoff.get('from_generation')!r} != referencing generation {source}")
+    target=handoff.get("to_generation")
+    if not isinstance(target,int) or isinstance(target,bool):
+        mismatches.append(f"to_generation {target!r} is not an integer generation")
+    elif source is not None and target<=source:
+        mismatches.append(f"to_generation {target} must be later than source generation {source}")
+    elif source is not None:
+        active=runtime.get("active_generation")
+        pending=runtime.get("pending_successor")
+        lifecycle=generation_record.get("lifecycle") if isinstance(generation_record,dict) else None
+        if source==active and lifecycle=="handoff_pending" and pending is not None:
+            pending_value=pending.get("generation") if isinstance(pending,dict) else pending
+            pending_generation=_generation_number(pending_value)
+            if pending_generation is not None and target!=pending_generation:
+                mismatches.append(f"to_generation {target} != pending successor generation {pending_generation}")
+        elif _generation_record(runtime.get("generations") or {},target) is None:
+            mismatches.append(f"to_generation {target} has no materialized successor generation record")
+    return mismatches
+
 class Validator:
     def __init__(self,root:Path): self.root=root.resolve(); self.docs={}; self.findings=[]; self.evidence=set(); self.curricula={}; self.schema_blocked=set()
     def error(self,c,p,m): self.findings.append(Finding("error",c,p,m))
@@ -284,9 +323,19 @@ class Validator:
                     n=h.get("generation") if isinstance(h,dict) else h
                     if r.get("lifecycle")!="handoff_pending":self.error("branch.pending_lifecycle",p,"source not handoff_pending")
                     if not isinstance(n,int) or n<=a:self.error("branch.pending_generation",p,"pending successor must advance")
-                for x in g.values():
+                for generation_key,x in g.items():
                     ref=x.get("handoff_ref") if isinstance(x,dict) else None
-                    if ref and not (self.root/ref).exists():self.error("branch.handoff_ref",p,ref)
+                    if not ref: continue
+                    _,reason,message=resolve_repository_relative_file(self.root,ref)
+                    if reason is not None:
+                        self.error("branch.handoff_ref",p,f"generation {generation_key!r} handoff_ref {ref!r}: {reason}: {message}"); continue
+                    if expected_types_for_path(ref)!=("learning_handoff",):
+                        self.error("branch.handoff_ref_target",p,f"generation {generation_key!r} handoff_ref {ref!r} is not a canonical learning_handoff path"); continue
+                    target=self.docs.get(ref)
+                    if target is None or ref in self.schema_blocked or target.get("document_type")!="learning_handoff":
+                        self.error("branch.handoff_ref_target",p,f"generation {generation_key!r} handoff_ref {ref!r} does not resolve to a structurally valid learning_handoff document"); continue
+                    mismatches=learning_handoff_identity_mismatches(d,generation_key,x,target)
+                    if mismatches:self.error("branch.handoff_ref_identity",p,f"generation {generation_key!r} handoff_ref {ref!r}: {'; '.join(mismatches)}")
     def weekly(self):
         for p,d in self.docs.items():
             if p in self.schema_blocked:continue
@@ -463,7 +512,7 @@ INSTANCE_SCHEMA="0.4"
 INSTANCE_ALLOWED_TOP={"config","learner","topics","evidence","execution","runtime","curriculum",".github"}
 INSTANCE_ALLOWED_FILES={"README.md",".gitignore","LICENSE"}
 # Core 拥有的顶层内容出现在 Instance 快照中即视为越界（fail closed）。
-INSTANCE_CORE_TOP={"protocol":"Core-owned reusable protocol","scripts":"Core-owned validator implementation","tests":"Core-owned tests and fixtures","domains":"Core-owned reusable domain bases","docs":"Core/handoff/acceptance documentation","coordination":"legacy coordination plane outside Instance ownership"}
+INSTANCE_CORE_TOP={"protocol":"Core-owned reusable protocol","scripts":"Core-owned validator implementation","tests":"Core-owned tests and fixtures","domains":"Core-owned reusable domain bases","docs":"Core/handoff/acceptance documentation",".github":"Core CI configuration","coordination":"legacy coordination plane outside Instance ownership"}
 INSTANCE_CONFIG_FORBIDDEN={"core.yaml":"Core plane contract","project.yaml":"legacy instance-authoritative project configuration","project-instructions.md":"instance-local legacy instructions","project-ui-bootstrap.md":"instance-local legacy UI bootstrap","deployment.yaml":"Runtime-Control deployment binding (B2-C)"}
 # Instance 中被拒绝的 Instance/Control 之外的 plane 文档类型
 INSTANCE_FORBIDDEN_DOC_TYPES={"lineage_control":"private project-design Control lineage","project_config":"legacy canonical project configuration","deployment_binding":"Runtime-Control deployment binding","migration_transaction":"Control migration transaction","core_config":"Core plane contract document"}
@@ -849,9 +898,26 @@ class InstanceValidator:
                 n=h.get("generation") if isinstance(h,dict) else h
                 if r.get("lifecycle")!="handoff_pending":self.error("branch.pending_lifecycle",p,"source not handoff_pending")
                 if not isinstance(n,int) or n<=a:self.error("branch.pending_generation",p,"pending successor must advance")
-            for x in g.values():
+            for generation_key,x in g.items():
                 ref=x.get("handoff_ref") if isinstance(x,dict) else None
-                if ref: self.check_instance_ref(p,ref,"handoff_ref")
+                if not ref: continue
+                where=f"{p}:generations.{generation_key}.handoff_ref"
+                if not isinstance(ref,str) or not ref.strip(): self.error("instance.ref_invalid",where,repr(ref)); continue
+                if ref.startswith(("/","~")) or re.match(r"^[A-Za-z]:",ref): self.error("instance.ref_absolute",where,ref); continue
+                if ".." in ref.split("/"): self.error("instance.ref_traversal",where,ref); continue
+                if not ref.startswith(INSTANCE_REF_PREFIXES): self.error("instance.ref_cross_plane",where,f"{ref} resolves outside Instance-owned planes"); continue
+                _,reason,message=resolve_repository_relative_file(self.root,ref)
+                if reason is not None:
+                    self.error("branch.handoff_ref",where,f"{ref!r}: {reason}: {message}"); continue
+                if expected_types_for_path(ref)!=("learning_handoff",):
+                    self.error("branch.handoff_ref_target",where,f"{ref!r} is not a canonical learning_handoff path"); continue
+                target=self.docs.get(ref)
+                if target is None or target.get("document_type")!="learning_handoff":
+                    self.error("branch.handoff_ref_target",where,f"{ref!r} does not resolve to a loaded learning_handoff mapping"); continue
+                if self.supported_state_schemas is not None and target.get("schema_version") not in self.supported_state_schemas:
+                    self.error("branch.handoff_ref_target",where,f"{ref!r} uses unsupported learning_handoff schema_version {target.get('schema_version')!r}"); continue
+                mismatches=learning_handoff_identity_mismatches(d,generation_key,x,target)
+                if mismatches:self.error("branch.handoff_ref_identity",where,"; ".join(mismatches))
     def weekly(self):
         for p,d in self.docs.items():
             if d.get("document_type")!="weekly_execution" or d.get("current_outcomes") is None or d.get("closing") is not None:continue

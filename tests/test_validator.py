@@ -642,5 +642,176 @@ class ValidatorTests(unittest.TestCase):
         self.assertIn("weekly.projection", error_codes(root))
 
 
+class LearningHandoffTargetIntegrityTests(unittest.TestCase):
+    """R1 legacy Branch-runtime handoff target/type/identity envelope."""
+
+    HANDOFF = "topics/topic-a/handoffs/branch-lineage/C01-to-C02.yaml"
+    RUNTIME = "topics/topic-a/coordination/branches/branch-main/runtime.yaml"
+
+    def make_repo(self):
+        td = tempfile.TemporaryDirectory()
+        return td, Path(td.name)
+
+    def symlink_or_skip(self, link: Path, target: Path | str, *, target_is_directory: bool = False) -> None:
+        link.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            link.symlink_to(target, target_is_directory=target_is_directory)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 1314:
+                self.skipTest("Windows host does not grant symbolic-link creation privilege")
+            raise
+
+    def handoff(self, **over) -> dict:
+        data = {
+            "schema_version": "0.3",
+            "document_type": "learning_handoff",
+            "topic": "topic-a",
+            "branch_id": "branch-main",
+            "lineage_id": "branch-lineage",
+            "from_generation": 1,
+            "to_generation": 2,
+        }
+        data.update(over)
+        return data
+
+    def runtime(self, ref, *, pending: bool = False) -> dict:
+        data = valid_branch_runtime()
+        if pending:
+            data["active_generation"] = 1
+            data["pending_successor"] = {"generation": 3}
+            data["generations"] = {1: {"lifecycle": "handoff_pending", "handoff_ref": ref}}
+        else:
+            data["generations"] = {
+                1: {"lifecycle": "archived", "handoff_ref": ref},
+                2: {"lifecycle": "active"},
+            }
+        return data
+
+    def write_runtime(self, root: Path, ref, *, pending: bool = False) -> None:
+        write_yaml(root, self.RUNTIME, self.runtime(ref, pending=pending))
+
+    def codes(self, root: Path) -> set[str]:
+        return {f.code for f in Validator(root).run() if f.severity == "error"}
+
+    def assert_pass(self, root: Path) -> None:
+        errors = [f.render() for f in Validator(root).run() if f.severity == "error"]
+        self.assertEqual([], errors)
+
+    def test_valid_completed_transition(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        write_yaml(root, self.HANDOFF, self.handoff())
+        self.write_runtime(root, self.HANDOFF)
+        self.assert_pass(root)
+
+    def test_valid_active_handoff_pending_matches_explicit_pending_successor(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        write_yaml(root, self.HANDOFF, self.handoff(to_generation=3))
+        self.write_runtime(root, self.HANDOFF, pending=True)
+        self.assert_pass(root)
+
+    def test_fail_absolute_external_existing_target(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        outside_td = tempfile.TemporaryDirectory(); self.addCleanup(outside_td.cleanup)
+        outside = Path(outside_td.name) / "handoff.yaml"
+        write_yaml(Path(outside_td.name), "handoff.yaml", self.handoff())
+        self.write_runtime(root, str(outside.resolve()))
+        self.assertIn("branch.handoff_ref", self.codes(root))
+
+    def test_fail_traversal_external_existing_target(self):
+        td = tempfile.TemporaryDirectory(); self.addCleanup(td.cleanup)
+        base = Path(td.name); root = base / "a" / "b"; root.mkdir(parents=True)
+        write_yaml(base, "outside.yaml", self.handoff())
+        self.write_runtime(root, "../../outside.yaml")
+        self.assertIn("branch.handoff_ref", self.codes(root))
+
+    def test_fail_final_component_symlink_escape(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        outside_td = tempfile.TemporaryDirectory(); self.addCleanup(outside_td.cleanup)
+        outside = Path(outside_td.name) / "handoff.yaml"
+        write_yaml(Path(outside_td.name), "handoff.yaml", self.handoff())
+        self.symlink_or_skip(root / self.HANDOFF, outside)
+        self.write_runtime(root, self.HANDOFF)
+        self.assertIn("branch.handoff_ref", self.codes(root))
+
+    def test_fail_directory_component_symlink_escape(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        outside_td = tempfile.TemporaryDirectory(); self.addCleanup(outside_td.cleanup)
+        outside = Path(outside_td.name)
+        write_yaml(outside, "C01-to-C02.yaml", self.handoff())
+        link = root / "topics/topic-a/handoffs/branch-lineage"
+        self.symlink_or_skip(link, outside, target_is_directory=True)
+        self.write_runtime(root, self.HANDOFF)
+        self.assertIn("branch.handoff_ref", self.codes(root))
+
+    def test_fail_existing_topic_plan_as_handoff_target(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        plan = "topics/topic-a/plan.yaml"
+        write_yaml(root, plan, {
+            "schema_version": "0.3", "document_type": "topic_plan", "revision": 1, "topic": "topic-a",
+            "plan": {"status": "active", "based_on": {"goal_revision": 1}, "milestones": []},
+        })
+        self.write_runtime(root, plan)
+        self.assertIn("branch.handoff_ref_target", self.codes(root))
+
+    def test_fail_existing_canonical_non_handoff_yaml_target(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        goal = "topics/topic-a/goal.yaml"
+        write_yaml(root, goal, {
+            "schema_version": "0.3", "document_type": "topic_goal", "revision": 1,
+            "topic": "topic-a", "goal": {"purpose": {"value": "synthetic"}},
+        })
+        self.write_runtime(root, goal)
+        self.assertIn("branch.handoff_ref_target", self.codes(root))
+
+    def test_fail_canonical_handoff_family_wrong_document_type(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        write_yaml(root, self.HANDOFF, {
+            "schema_version": "0.3", "document_type": "topic_plan", "revision": 1, "topic": "topic-a",
+            "plan": {"status": "active", "based_on": {"goal_revision": 1}, "milestones": []},
+        })
+        self.write_runtime(root, self.HANDOFF)
+        self.assertIn("branch.handoff_ref_target", self.codes(root))
+
+    def test_fail_handoff_for_another_branch(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        write_yaml(root, self.HANDOFF, self.handoff(branch_id="branch-other"))
+        self.write_runtime(root, self.HANDOFF)
+        self.assertIn("branch.handoff_ref_identity", self.codes(root))
+
+    def test_fail_handoff_for_another_lineage(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        write_yaml(root, self.HANDOFF, self.handoff(lineage_id="other-lineage"))
+        self.write_runtime(root, self.HANDOFF)
+        self.assertIn("branch.handoff_ref_identity", self.codes(root))
+
+    def test_fail_handoff_wrong_topic(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        write_yaml(root, self.HANDOFF, self.handoff(topic="topic-other"))
+        self.write_runtime(root, self.HANDOFF)
+        self.assertIn("branch.handoff_ref_identity", self.codes(root))
+
+    def test_fail_handoff_wrong_from_generation(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        write_yaml(root, self.HANDOFF, self.handoff(from_generation=2))
+        self.write_runtime(root, self.HANDOFF)
+        self.assertIn("branch.handoff_ref_identity", self.codes(root))
+
+    def test_fail_handoff_wrong_to_generation(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        write_yaml(root, self.HANDOFF, self.handoff(to_generation=3))
+        self.write_runtime(root, self.HANDOFF)
+        self.assertIn("branch.handoff_ref_identity", self.codes(root))
+
+    def test_fail_explicit_empty_handoff_ref(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        self.write_runtime(root, "")
+        self.assertIn("branch.handoff_ref", self.codes(root))
+
+    def test_fail_explicit_null_handoff_ref(self):
+        td, root = self.make_repo(); self.addCleanup(td.cleanup)
+        self.write_runtime(root, None)
+        self.assertIn("branch.handoff_ref", self.codes(root))
+
+
 if __name__ == "__main__":
     unittest.main()

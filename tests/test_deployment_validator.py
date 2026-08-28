@@ -387,6 +387,24 @@ class DeploymentValidationTests(unittest.TestCase):
         (self.instance_root / "config" / "instance.yaml").unlink()
         self.assertIn("instance.config_missing", self.errors())
 
+    def test_handoff_integrity_failure_propagates_from_instance(self):
+        handoff = "topics/topic-a/subtopics/sub-a/handoffs/lineage-a/C01-to-C02.yaml"
+        write_yaml(self.instance_root, handoff, {
+            "schema_version": "0.3", "document_type": "learning_handoff",
+            "topic": "topic-a", "branch_id": "wrong-branch", "lineage_id": "lineage-a",
+            "from_generation": 1, "to_generation": 2,
+        })
+        write_yaml(self.instance_root, "topics/topic-a/coordination/branches/branch-a/runtime.yaml", {
+            "schema_version": "0.3", "document_type": "branch_runtime", "revision": 1,
+            "topic": "topic-a", "branch_id": "branch-a", "lineage_id": "lineage-a",
+            "active_generation": 2, "pending_successor": None,
+            "generations": {
+                "1": {"lifecycle": "archived", "handoff_ref": handoff},
+                "2": {"lifecycle": "active"},
+            },
+        })
+        self.assertIn("branch.handoff_ref_identity", self.errors())
+
     def test_binding_projection_uses_contract_fields(self):
         # contract 投影 binding：字段与 contract 一致（epoch=2 传播到 Instance 面）。
         self.assert_pass(contract(deployment={"epoch": 2, "id": "dep-synthetic-002"}))

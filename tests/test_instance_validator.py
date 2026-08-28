@@ -536,5 +536,137 @@ class InstanceValidationTests(unittest.TestCase):
         self.assertIn("instance.product_mismatch", self.errors())
 
 
+class InstanceLearningHandoffTargetIntegrityTests(unittest.TestCase):
+    """R1 split-Instance Branch-runtime handoff target/type/identity envelope."""
+
+    HANDOFF = "topics/modern-language-models/subtopics/language-modeling/handoffs/modern-language-models-main-lineage/C01-to-C02.yaml"
+    RUNTIME = "topics/modern-language-models/coordination/branches/language-modeling-main/runtime.yaml"
+
+    def setUp(self) -> None:
+        core_td = tempfile.TemporaryDirectory()
+        inst_td = tempfile.TemporaryDirectory()
+        self.addCleanup(core_td.cleanup)
+        self.addCleanup(inst_td.cleanup)
+        self.core = make_core(Path(core_td.name))
+        self.instance = make_instance(Path(inst_td.name))
+
+    def seed(self, handoff_ref=HANDOFF) -> None:
+        write_full_state(
+            self.instance,
+            curriculum_refs=[{"type": "curriculum_node", "domain": DOMAIN, "id": f"{DOMAIN}.foundation"}],
+            provenance=[{"domain": DOMAIN, "curriculum_version": BASE_VERSION}],
+            handoff_ref=handoff_ref,
+        )
+
+    def errors(self) -> set[str]:
+        return {f.code for f in validate_instance(self.instance, self.core, deployment_binding()) if f.severity == "error"}
+
+    def assert_pass(self) -> None:
+        errors = [f.render() for f in validate_instance(self.instance, self.core, deployment_binding()) if f.severity == "error"]
+        self.assertEqual([], errors)
+
+    def read_yaml(self, rel: str) -> dict:
+        return yaml.safe_load((self.instance / rel).read_text(encoding="utf-8"))
+
+    def mutate_handoff(self, **over) -> None:
+        data = self.read_yaml(self.HANDOFF)
+        data.update(over)
+        write_yaml(self.instance, self.HANDOFF, data)
+
+    def mutate_runtime(self, data: dict) -> None:
+        write_yaml(self.instance, self.RUNTIME, data)
+
+    def symlink_or_skip(self, link: Path, target: Path | str, *, target_is_directory: bool = False) -> None:
+        try:
+            link.symlink_to(target, target_is_directory=target_is_directory)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 1314:
+                self.skipTest("Windows host does not grant symbolic-link creation privilege")
+            raise
+
+    def test_valid_completed_handoff(self):
+        self.seed()
+        self.assert_pass()
+
+    def test_valid_pending_successor_handoff_without_n_plus_one_assumption(self):
+        self.seed()
+        self.mutate_handoff(to_generation=3)
+        runtime = self.read_yaml(self.RUNTIME)
+        runtime["active_generation"] = 1
+        runtime["pending_successor"] = {"generation": 3}
+        runtime["generations"] = {"1": {"lifecycle": "handoff_pending", "handoff_ref": self.HANDOFF}}
+        self.mutate_runtime(runtime)
+        self.assert_pass()
+
+    def test_fail_allowed_prefix_final_symlink_escape(self):
+        self.seed()
+        target_data = self.read_yaml(self.HANDOFF)
+        outside_td = tempfile.TemporaryDirectory(); self.addCleanup(outside_td.cleanup)
+        outside = Path(outside_td.name) / "handoff.yaml"
+        write_yaml(Path(outside_td.name), "handoff.yaml", target_data)
+        link = self.instance / self.HANDOFF
+        link.unlink()
+        self.symlink_or_skip(link, outside)
+        self.assertIn("branch.handoff_ref", self.errors())
+
+    def test_fail_allowed_prefix_directory_component_symlink_escape(self):
+        self.seed()
+        target_data = self.read_yaml(self.HANDOFF)
+        lineage_dir = (self.instance / self.HANDOFF).parent
+        (lineage_dir / "C01-to-C02.yaml").unlink()
+        lineage_dir.rmdir()
+        outside_td = tempfile.TemporaryDirectory(); self.addCleanup(outside_td.cleanup)
+        outside = Path(outside_td.name)
+        write_yaml(outside, "C01-to-C02.yaml", target_data)
+        self.symlink_or_skip(lineage_dir, outside, target_is_directory=True)
+        self.assertIn("branch.handoff_ref", self.errors())
+
+    def test_fail_instance_owned_existing_non_handoff_target(self):
+        plan = "topics/modern-language-models/plan.yaml"
+        self.seed(plan)
+        self.assertIn("branch.handoff_ref_target", self.errors())
+
+    def test_fail_wrong_branch(self):
+        self.seed()
+        self.mutate_handoff(branch_id="other-branch")
+        self.assertIn("branch.handoff_ref_identity", self.errors())
+
+    def test_fail_wrong_lineage(self):
+        self.seed()
+        self.mutate_handoff(lineage_id="other-lineage")
+        self.assertIn("branch.handoff_ref_identity", self.errors())
+
+    def test_fail_wrong_topic(self):
+        self.seed()
+        self.mutate_handoff(topic="other-topic")
+        self.assertIn("branch.handoff_ref_identity", self.errors())
+
+    def test_fail_wrong_from_generation(self):
+        self.seed()
+        self.mutate_handoff(from_generation=2)
+        self.assertIn("branch.handoff_ref_identity", self.errors())
+
+    def test_fail_wrong_to_generation(self):
+        self.seed()
+        self.mutate_handoff(to_generation=3)
+        self.assertIn("branch.handoff_ref_identity", self.errors())
+
+    def test_fail_explicit_empty_handoff_ref(self):
+        self.seed("")
+        self.assertIn("instance.ref_invalid", self.errors())
+
+    def test_fail_missing_handoff_target(self):
+        missing = "topics/modern-language-models/subtopics/language-modeling/handoffs/modern-language-models-main-lineage/C09-to-C10.yaml"
+        self.seed(missing)
+        self.assertIn("branch.handoff_ref", self.errors())
+
+    def test_benign_github_workflow_metadata_is_allowed(self):
+        write_file(self.instance, ".github/workflows/validate-instance.yml", "name: validate-instance\non: push\n")
+        errors = self.errors()
+        self.assertNotIn("instance.core_owned_top", errors)
+        self.assertNotIn("instance.top_level", errors)
+        self.assertEqual(set(), errors)
+
+
 if __name__ == "__main__":
     unittest.main()

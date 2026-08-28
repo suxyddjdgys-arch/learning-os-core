@@ -509,17 +509,59 @@ def validate_core(core_snapshot):
 # are NOT implemented here.
 
 INSTANCE_SCHEMA="0.4"
-INSTANCE_ALLOWED_TOP={"config","learner","topics","evidence","execution","runtime","curriculum",".github"}
+INSTANCE_ALLOWED_TOP={"config","learner","topics","evidence","execution","runtime","curriculum","coordination",".github"}
 INSTANCE_ALLOWED_FILES={"README.md",".gitignore","LICENSE"}
-# Core 拥有的顶层内容出现在 Instance 快照中即视为越界（fail closed）。
-INSTANCE_CORE_TOP={"protocol":"Core-owned reusable protocol","scripts":"Core-owned validator implementation","tests":"Core-owned tests and fixtures","domains":"Core-owned reusable domain bases","docs":"Core/handoff/acceptance documentation","coordination":"legacy coordination plane outside Instance ownership"}
+# Core-owned material is forbidden in an Instance snapshot. R2B explicitly
+# assigns the narrow coordination/hub/runtime.yaml family to the Instance,
+# so coordination is no longer rejected as an entire top-level plane.
+INSTANCE_CORE_TOP={"protocol":"Core-owned reusable protocol","scripts":"Core-owned validator implementation","tests":"Core-owned tests and fixtures","domains":"Core-owned reusable domain bases","docs":"Core/handoff/acceptance documentation"}
 INSTANCE_CONFIG_FORBIDDEN={"core.yaml":"Core plane contract","project.yaml":"legacy instance-authoritative project configuration","project-instructions.md":"instance-local legacy instructions","project-ui-bootstrap.md":"instance-local legacy UI bootstrap","deployment.yaml":"Runtime-Control deployment binding (B2-C)"}
 # Instance 中被拒绝的 Instance/Control 之外的 plane 文档类型
 INSTANCE_FORBIDDEN_DOC_TYPES={"lineage_control":"private project-design Control lineage","project_config":"legacy canonical project configuration","deployment_binding":"Runtime-Control deployment binding","migration_transaction":"Control migration transaction","core_config":"Core plane contract document"}
 INSTANCE_STATE_TYPES={"learner_background","learner_model","learner_calibration","learner_costs","learner_execution","learner_knowledge","topic_goal","topic_plan","topic_progress","topic_deferred","subtopic_definition","subtopic_plan","subtopic_progress","evidence","weekly_execution","daily_execution","execution_session","branch_registry","branch_runtime","learning_handoff","topic_report","branch_report","hub_runtime","coordination_event","conversation_sequence_registry"}
 INSTANCE_CONTRACT_TYPES={"instance_config","curriculum_extension"}
 INSTANCE_CURRICULUM_TYPES={"curriculum"}
-INSTANCE_ALL_TYPES=INSTANCE_STATE_TYPES|INSTANCE_CONTRACT_TYPES|INSTANCE_CURRICULUM_TYPES
+# V0.4-R2B protocol/schema.md §2.1: complete split Instance physical registry.
+# Rule order has no semantic meaning; callers collect every full match.
+_INSTANCE_HANDOFF_FILE=r"C[^/]+-to-C[^/]+\.yaml"
+INSTANCE_CANONICAL_PATH_RULES=(
+    (re.compile(r"config/instance\.yaml"),"instance_config"),
+    (re.compile(rf"curriculum/extensions/{_YAML_SEG}"),"curriculum_extension"),
+    (re.compile(rf"curriculum/local/{_SEG}/curriculum\.yaml"),"curriculum"),
+    (re.compile(r"runtime/ui/conversation-sequences\.yaml"),"conversation_sequence_registry"),
+    (re.compile(r"learner/background\.yaml"),"learner_background"),
+    (re.compile(r"learner/model\.yaml"),"learner_model"),
+    (re.compile(r"learner/calibration\.yaml"),"learner_calibration"),
+    (re.compile(r"learner/costs\.yaml"),"learner_costs"),
+    (re.compile(r"learner/execution\.yaml"),"learner_execution"),
+    (re.compile(rf"learner/knowledge/{_YAML_SEG}"),"learner_knowledge"),
+    (re.compile(rf"topics/{_SEG}/goal\.yaml"),"topic_goal"),
+    (re.compile(rf"topics/{_SEG}/plan\.yaml"),"topic_plan"),
+    (re.compile(rf"topics/{_SEG}/progress\.yaml"),"topic_progress"),
+    (re.compile(rf"topics/{_SEG}/deferred\.yaml"),"topic_deferred"),
+    (re.compile(rf"topics/{_SEG}/subtopics/{_SEG}/definition\.yaml"),"subtopic_definition"),
+    (re.compile(rf"topics/{_SEG}/subtopics/{_SEG}/plan\.yaml"),"subtopic_plan"),
+    (re.compile(rf"topics/{_SEG}/subtopics/{_SEG}/progress\.yaml"),"subtopic_progress"),
+    (re.compile(rf"execution/weekly/{_YAML_SEG}"),"weekly_execution"),
+    (re.compile(rf"topics/{_SEG}/execution/daily/{_YAML_SEG}"),"daily_execution"),
+    (re.compile(rf"topics/{_SEG}/execution/sessions/{_YAML_SEG}"),"execution_session"),
+    (re.compile(rf"topics/{_SEG}/coordination/branches\.yaml"),"branch_registry"),
+    (re.compile(rf"topics/{_SEG}/coordination/branches/{_SEG}/runtime\.yaml"),"branch_runtime"),
+    (re.compile(rf"topics/{_SEG}/coordination/branches/{_SEG}/report\.yaml"),"branch_report"),
+    (re.compile(rf"topics/{_SEG}/coordination/events/{_YAML_SEG}"),"coordination_event"),
+    (re.compile(rf"topics/{_SEG}/coordination/topic-report\.yaml"),"topic_report"),
+    (re.compile(r"coordination/hub/runtime\.yaml"),"hub_runtime"),
+    (re.compile(rf"topics/{_SEG}/handoffs/{_SEG}/{_INSTANCE_HANDOFF_FILE}"),"learning_handoff"),
+    (re.compile(rf"topics/{_SEG}/subtopics/{_SEG}/handoffs/{_SEG}/{_INSTANCE_HANDOFF_FILE}"),"learning_handoff"),
+    (re.compile(rf"evidence/{_YAML_SEG}"),"evidence"),
+)
+INSTANCE_ALL_TYPES=frozenset(t for _,t in INSTANCE_CANONICAL_PATH_RULES)
+
+def instance_expected_types(p,rules=None):
+    """Return every split Instance document type whose canonical family matches p."""
+    if rules is None: rules=INSTANCE_CANONICAL_PATH_RULES
+    return tuple(t for rx,t in rules if rx.fullmatch(p))
+
 # instance.yaml 不得重定义 Core 拥有的契约区块（Core semantic override 拒绝）
 INSTANCE_CONFIG_CORE_SECTIONS={"chat_routing","protocol","domains","governance","bootstrap","manifest","runtime","time"}
 # Control/deployment authority 与 credential 键：Instance 任何文档禁止
@@ -595,12 +637,12 @@ class InstanceValidator:
         self.structural(); self.refs(); self.sequence(); self.authority(); self.weekly(); self.provenance()
         return self.findings
     @staticmethod
+    def instance_expected_types(p):
+        return instance_expected_types(p)
+    @staticmethod
     def instance_expected(p):
-        # 与 legacy expected() 相同的 Instance-plane 路径分类，另加 V0.4 curriculum 路径
-        exact={"config/instance.yaml":"instance_config","runtime/ui/conversation-sequences.yaml":"conversation_sequence_registry","learner/background.yaml":"learner_background","learner/model.yaml":"learner_model","learner/calibration.yaml":"learner_calibration","learner/costs.yaml":"learner_costs","learner/execution.yaml":"learner_execution"}
-        if p in exact:return exact[p]
-        pats=[(r"learner/knowledge/[^/]+\.yaml","learner_knowledge"),(r"curriculum/extensions/[^/]+\.yaml","curriculum_extension"),(r"curriculum/local/[^/]+/curriculum\.yaml","curriculum"),(r"evidence/[^/]+\.yaml","evidence"),(r"execution/weekly/[^/]+\.yaml","weekly_execution"),(r"topics/[^/]+/goal\.yaml","topic_goal"),(r"topics/[^/]+/plan\.yaml","topic_plan"),(r"topics/[^/]+/progress\.yaml","topic_progress"),(r"topics/[^/]+/deferred\.yaml","topic_deferred"),(r"topics/[^/]+/subtopics/[^/]+/definition\.yaml","subtopic_definition"),(r"topics/[^/]+/subtopics/[^/]+/plan\.yaml","subtopic_plan"),(r"topics/[^/]+/subtopics/[^/]+/progress\.yaml","subtopic_progress"),(r"topics/[^/]+/coordination/branches\.yaml","branch_registry"),(r"topics/[^/]+/coordination/branches/[^/]+/runtime\.yaml","branch_runtime"),(r"topics/[^/]+/execution/sessions/[^/]+\.yaml","execution_session"),(r"topics/[^/]+/subtopics/[^/]+/handoffs/[^/]+/[^/]+\.yaml","learning_handoff")]
-        return next((t for r,t in pats if re.fullmatch(r,p)),None)
+        matches=instance_expected_types(p)
+        return matches[0] if len(matches)==1 else None
     def scan_top(self):
         for e in sorted(self.root.iterdir()):
             n=e.name
@@ -707,12 +749,14 @@ class InstanceValidator:
     def check_documents(self):
         for p,d in self.docs.items():
             t=d.get("document_type")
-            if t is None: self.error("yaml.document_type",p,"missing document_type"); continue
-            if t in INSTANCE_FORBIDDEN_DOC_TYPES: self.error("instance.forbidden_document",p,f"{INSTANCE_FORBIDDEN_DOC_TYPES.get(t,'forbidden')} is not Instance-plane material")
+            if t is None: self.error("yaml.document_type",p,"missing document_type")
+            elif t in INSTANCE_FORBIDDEN_DOC_TYPES: self.error("instance.forbidden_document",p,f"{INSTANCE_FORBIDDEN_DOC_TYPES.get(t,'forbidden')} is not Instance-plane material")
                 # still fall through to key scan for defense in depth
             elif t not in INSTANCE_ALL_TYPES: self.error("instance.unknown_document_type",p,f"unknown Instance document type {t!r}")
-            e=self.instance_expected(p)
-            if e and t!=e: self.error("path.document_type",p,f"expected {e}, found {t}")
+            matches=instance_expected_types(p)
+            if not matches: self.error("path.unregistered",p,f"no canonical split Instance storage family registered for {p}")
+            elif len(matches)>1: self.error("path.ambiguous",p,f"multiple split Instance storage families match {p}: {list(matches)}")
+            elif t is not None and t!=matches[0]: self.error("path.document_type",p,f"expected {matches[0]}, found {t}")
             if "schema_version" not in d: self.error("yaml.schema_version",p,"missing schema_version")
             elif t in INSTANCE_STATE_TYPES and self.supported_state_schemas is not None and d["schema_version"] not in self.supported_state_schemas:
                 self.error("instance.state_schema_unsupported",p,f"state schema_version {d['schema_version']!r} not in Core supported_instance_state_schema_versions {sorted(self.supported_state_schemas)}")

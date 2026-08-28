@@ -1009,7 +1009,7 @@ DEPLOYMENT_TRUST_BOUNDARY_KEYS={
     "instance_repository_id":"Instance identity must come from the trusted locator, never the public contract",
     "instance_repository_full_name":"Instance identity must come from the trusted locator, never the public contract",
     "instance_canonical_ref":"Instance identity must come from the trusted locator, never the public contract",
-    "instance":"Instance identity block is forbidden in the public contract",
+    "instance":"Instance identity block is forbidden in the public Runtime-Control contract",
     "runtime_control_repository_id":"a repository must not self-assert its own trusted identity",
     "active_generation":"lineage authority does not belong in a deployment contract",
     "pending_handoff":"lineage authority does not belong in a deployment contract",

@@ -512,7 +512,7 @@ INSTANCE_SCHEMA="0.4"
 INSTANCE_ALLOWED_TOP={"config","learner","topics","evidence","execution","runtime","curriculum",".github"}
 INSTANCE_ALLOWED_FILES={"README.md",".gitignore","LICENSE"}
 # Core 拥有的顶层内容出现在 Instance 快照中即视为越界（fail closed）。
-INSTANCE_CORE_TOP={"protocol":"Core-owned reusable protocol","scripts":"Core-owned validator implementation","tests":"Core-owned tests and fixtures","domains":"Core-owned reusable domain bases","docs":"Core/handoff/acceptance documentation",".github":"Core CI configuration","coordination":"legacy coordination plane outside Instance ownership"}
+INSTANCE_CORE_TOP={"protocol":"Core-owned reusable protocol","scripts":"Core-owned validator implementation","tests":"Core-owned tests and fixtures","domains":"Core-owned reusable domain bases","docs":"Core/handoff/acceptance documentation","coordination":"legacy coordination plane outside Instance ownership"}
 INSTANCE_CONFIG_FORBIDDEN={"core.yaml":"Core plane contract","project.yaml":"legacy instance-authoritative project configuration","project-instructions.md":"instance-local legacy instructions","project-ui-bootstrap.md":"instance-local legacy UI bootstrap","deployment.yaml":"Runtime-Control deployment binding (B2-C)"}
 # Instance 中被拒绝的 Instance/Control 之外的 plane 文档类型
 INSTANCE_FORBIDDEN_DOC_TYPES={"lineage_control":"private project-design Control lineage","project_config":"legacy canonical project configuration","deployment_binding":"Runtime-Control deployment binding","migration_transaction":"Control migration transaction","core_config":"Core plane contract document"}
@@ -611,7 +611,7 @@ class InstanceValidator:
                 if n=="config":
                     for f in sorted(e.iterdir()):
                         if f.name in INSTANCE_CONFIG_FORBIDDEN: self.error("instance.config_forbidden",f"config/{f.name}",INSTANCE_CONFIG_FORBIDDEN[f.name])
-                        elif f.name!="instance.yaml": self.error("instance.config_entry",f"config/{f.name}","only config/instance.yaml is allowed in the Instance config directory")
+                        elif f.name!="instance.yaml": self.error("instance.config_entry",f"config/{f.name}","only config/instance.yaml is allowed in the Core config directory")
                 if n=="runtime":
                     for sub in sorted(e.iterdir()):
                         if sub.name=="lineages": self.error("instance.private_lineage","runtime/lineages","private project-design lineage control material belongs to the Control plane, never Instance")
@@ -1032,7 +1032,7 @@ LOCATOR_INSTANCE_KEYS={"repository_id","repository","canonical_ref"}
 
 class DeploymentValidator:
     """Deterministic validate_deployment(control_snapshot, deployed_core,
-    instance_snapshot, trusted_locator) surface for the V0.4 split planes.
+    instance_snapshot,trusted_locator) surface for the V0.4 split planes.
 
     复用 validate_core() 与 validate_instance()（经 InstanceValidator），
     不复制其逻辑；本面只新增 deployment contract 结构/身份/信任边界检查。
@@ -1187,13 +1187,13 @@ class DeploymentValidator:
 
 def validate_deployment(control_snapshot, deployed_core, instance_snapshot, trusted_locator):
     """V0.4 split deployment validation surface:
-    validate_deployment(control_snapshot, deployed_core, instance_snapshot,
+    validate_deployment(control_snapshot, deployed_core,instance_snapshot,
     trusted_locator).
 
     control_snapshot / deployed_core / instance_snapshot: RepositorySnapshot
         objects — materialized trees plus CALLER-SUPPLIED trusted provenance
         (repository_id, and for the deployed Core the exact pinned 40-hex
-        commit_sha). Self-declared identity inside repository content is
+        commit_sha). Self-declared identity inside any repository content is
         never trusted; missing provenance fails closed.
     trusted_locator: the external trust root (dict or YAML file path) with
         runtime_control.repository_id (+ optional canonical_ref/contract_path

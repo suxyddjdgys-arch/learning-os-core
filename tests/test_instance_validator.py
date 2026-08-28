@@ -518,7 +518,7 @@ class InstanceValidationTests(unittest.TestCase):
     # ===== Negative: Instance config 边界 =====
 
     def test_fail_instance_config_missing(self):
-        (self.instance / "config" / "instance.yaml").unlink()
+        (self.instance / "config/instance.yaml").unlink()
         self.assertIn("instance.config_missing", self.errors())
 
     def test_fail_instance_config_core_override(self):

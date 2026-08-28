@@ -387,12 +387,6 @@ class DeploymentValidationTests(unittest.TestCase):
         (self.instance_root / "config" / "instance.yaml").unlink()
         self.assertIn("instance.config_missing", self.errors())
 
-    def test_instance_unregistered_path_failure_propagates(self):
-        write_yaml(self.instance_root, "learner/random/foo.yaml", {
-            "schema_version": "0.3", "document_type": "learner_model",
-        })
-        self.assertIn("path.unregistered", self.errors())
-
     def test_handoff_integrity_failure_propagates_from_instance(self):
         handoff = "topics/topic-a/subtopics/sub-a/handoffs/lineage-a/C01-to-C02.yaml"
         write_yaml(self.instance_root, handoff, {

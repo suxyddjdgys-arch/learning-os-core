@@ -449,7 +449,7 @@ class CoreValidator:
                 self.error("core.deployment_authority",p,f"manifest.{field} is forbidden: deployment authority belongs exclusively to Runtime-Control")
         t=d.get("time") or {}
         if t.get("timestamp_format")!="iso8601": self.error("core.timestamp_format",p,"time.timestamp_format must be iso8601")
-        if t.get("require_reliable_source") is not True: self.error("core.reliable_time",p,"time.require_reliable_time must be true")
+        if t.get("require_reliable_source") is not True: self.error("core.reliable_time",p,"time.require_reliable_source must be true")
         proto=d.get("protocol") or {}
         routed={v for v in proto.values() if isinstance(v,str)}
         for k,v in proto.items():
@@ -1009,7 +1009,7 @@ DEPLOYMENT_TRUST_BOUNDARY_KEYS={
     "instance_repository_id":"Instance identity must come from the trusted locator, never the public contract",
     "instance_repository_full_name":"Instance identity must come from the trusted locator, never the public contract",
     "instance_canonical_ref":"Instance identity must come from the trusted locator, never the public contract",
-    "instance":"Instance identity block is forbidden in the public Runtime-Control contract",
+    "instance":"Instance identity block is forbidden in the public contract",
     "runtime_control_repository_id":"a repository must not self-assert its own trusted identity",
     "active_generation":"lineage authority does not belong in a deployment contract",
     "pending_handoff":"lineage authority does not belong in a deployment contract",

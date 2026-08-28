@@ -324,8 +324,8 @@ class Validator:
                     if r.get("lifecycle")!="handoff_pending":self.error("branch.pending_lifecycle",p,"source not handoff_pending")
                     if not isinstance(n,int) or n<=a:self.error("branch.pending_generation",p,"pending successor must advance")
                 for generation_key,x in g.items():
-                    ref=x.get("handoff_ref") if isinstance(x,dict) else None
-                    if not ref: continue
+                    if not isinstance(x,dict) or "handoff_ref" not in x: continue
+                    ref=x.get("handoff_ref")
                     _,reason,message=resolve_repository_relative_file(self.root,ref)
                     if reason is not None:
                         self.error("branch.handoff_ref",p,f"generation {generation_key!r} handoff_ref {ref!r}: {reason}: {message}"); continue
@@ -449,7 +449,7 @@ class CoreValidator:
                 self.error("core.deployment_authority",p,f"manifest.{field} is forbidden: deployment authority belongs exclusively to Runtime-Control")
         t=d.get("time") or {}
         if t.get("timestamp_format")!="iso8601": self.error("core.timestamp_format",p,"time.timestamp_format must be iso8601")
-        if t.get("require_reliable_source") is not True: self.error("core.reliable_time",p,"time.require_reliable_source must be true")
+        if t.get("require_reliable_source") is not True: self.error("core.reliable_time",p,"time.require_reliable_time must be true")
         proto=d.get("protocol") or {}
         routed={v for v in proto.values() if isinstance(v,str)}
         for k,v in proto.items():
@@ -899,8 +899,8 @@ class InstanceValidator:
                 if r.get("lifecycle")!="handoff_pending":self.error("branch.pending_lifecycle",p,"source not handoff_pending")
                 if not isinstance(n,int) or n<=a:self.error("branch.pending_generation",p,"pending successor must advance")
             for generation_key,x in g.items():
-                ref=x.get("handoff_ref") if isinstance(x,dict) else None
-                if not ref: continue
+                if not isinstance(x,dict) or "handoff_ref" not in x: continue
+                ref=x.get("handoff_ref")
                 where=f"{p}:generations.{generation_key}.handoff_ref"
                 if not isinstance(ref,str) or not ref.strip(): self.error("instance.ref_invalid",where,repr(ref)); continue
                 if ref.startswith(("/","~")) or re.match(r"^[A-Za-z]:",ref): self.error("instance.ref_absolute",where,ref); continue

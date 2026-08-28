@@ -668,5 +668,188 @@ class InstanceLearningHandoffTargetIntegrityTests(unittest.TestCase):
         self.assertEqual(set(), errors)
 
 
+class SplitInstanceStorageRegistryTests(unittest.TestCase):
+    """R2C conformance to the frozen 28-type / 29-family split registry."""
+
+    SAMPLES = (
+        ("config/instance.yaml", "instance_config"),
+        ("curriculum/extensions/ext.yaml", "curriculum_extension"),
+        ("curriculum/local/local-domain/curriculum.yaml", "curriculum"),
+        ("runtime/ui/conversation-sequences.yaml", "conversation_sequence_registry"),
+        ("learner/background.yaml", "learner_background"),
+        ("learner/model.yaml", "learner_model"),
+        ("learner/calibration.yaml", "learner_calibration"),
+        ("learner/costs.yaml", "learner_costs"),
+        ("learner/execution.yaml", "learner_execution"),
+        ("learner/knowledge/domain.yaml", "learner_knowledge"),
+        ("topics/topic/goal.yaml", "topic_goal"),
+        ("topics/topic/plan.yaml", "topic_plan"),
+        ("topics/topic/progress.yaml", "topic_progress"),
+        ("topics/topic/deferred.yaml", "topic_deferred"),
+        ("topics/topic/subtopics/sub/definition.yaml", "subtopic_definition"),
+        ("topics/topic/subtopics/sub/plan.yaml", "subtopic_plan"),
+        ("topics/topic/subtopics/sub/progress.yaml", "subtopic_progress"),
+        ("execution/weekly/2026-W35.yaml", "weekly_execution"),
+        ("topics/topic/execution/daily/2026-08-28.yaml", "daily_execution"),
+        ("topics/topic/execution/sessions/s1.yaml", "execution_session"),
+        ("topics/topic/coordination/branches.yaml", "branch_registry"),
+        ("topics/topic/coordination/branches/main/runtime.yaml", "branch_runtime"),
+        ("topics/topic/coordination/branches/main/report.yaml", "branch_report"),
+        ("topics/topic/coordination/events/evt.yaml", "coordination_event"),
+        ("topics/topic/coordination/topic-report.yaml", "topic_report"),
+        ("coordination/hub/runtime.yaml", "hub_runtime"),
+        ("topics/topic/handoffs/lineage/C01-to-C02.yaml", "learning_handoff"),
+        ("topics/topic/subtopics/sub/handoffs/lineage/C01-to-C02.yaml", "learning_handoff"),
+        ("evidence/evi.yaml", "evidence"),
+    )
+
+    def setUp(self) -> None:
+        core_td = tempfile.TemporaryDirectory()
+        inst_td = tempfile.TemporaryDirectory()
+        self.addCleanup(core_td.cleanup)
+        self.addCleanup(inst_td.cleanup)
+        self.core = make_core(Path(core_td.name))
+        self.instance = make_instance(Path(inst_td.name))
+
+    def errors(self, instance: Path | None = None) -> set[str]:
+        findings = validate_instance(instance or self.instance, self.core, deployment_binding())
+        return {f.code for f in findings if f.severity == "error"}
+
+    def assert_pass(self) -> None:
+        errors = [f.render() for f in validate_instance(self.instance, self.core, deployment_binding()) if f.severity == "error"]
+        self.assertEqual([], errors)
+
+    def test_registry_contract_matches_all_29_r2b_rows(self):
+        from scripts.validate_learning_os import (
+            INSTANCE_ALL_TYPES,
+            INSTANCE_CANONICAL_PATH_RULES,
+            INSTANCE_CONTRACT_TYPES,
+            INSTANCE_CURRICULUM_TYPES,
+            INSTANCE_STATE_TYPES,
+            instance_expected_types,
+        )
+        self.assertEqual(29, len(INSTANCE_CANONICAL_PATH_RULES))
+        self.assertEqual(28, len(INSTANCE_ALL_TYPES))
+        self.assertEqual(INSTANCE_ALL_TYPES, INSTANCE_STATE_TYPES | INSTANCE_CONTRACT_TYPES | INSTANCE_CURRICULUM_TYPES)
+        self.assertEqual(INSTANCE_ALL_TYPES, frozenset(t for _, t in self.SAMPLES))
+        for path, expected in self.SAMPLES:
+            with self.subTest(path=path):
+                self.assertEqual((expected,), instance_expected_types(path))
+
+    def test_r2a_zero_match_known_type_now_fails_closed(self):
+        write_yaml(self.instance, "learner/random/foo.yaml", {
+            "schema_version": "0.3", "document_type": "learner_model",
+        })
+        self.assertIn("path.unregistered", self.errors())
+
+    def test_known_type_in_another_registered_family_fails(self):
+        write_yaml(self.instance, "learner/model.yaml", {
+            "schema_version": "0.3", "document_type": "learner_background",
+        })
+        self.assertIn("path.document_type", self.errors())
+
+    def test_unknown_type_on_registered_path_stays_unknown(self):
+        write_yaml(self.instance, "learner/model.yaml", {
+            "schema_version": "0.3", "document_type": "mystery_document",
+        })
+        errors = self.errors()
+        self.assertIn("instance.unknown_document_type", errors)
+        self.assertIn("path.document_type", errors)
+
+    def test_allowed_top_level_unregistered_interior_fails(self):
+        write_yaml(self.instance, "topics/topic/random.yaml", {
+            "schema_version": "0.3", "document_type": "topic_goal",
+            "revision": 1, "topic": "topic", "goal": {"statement": "x"},
+        })
+        self.assertIn("path.unregistered", self.errors())
+
+    def test_nested_evidence_fails_path_registration(self):
+        write_yaml(self.instance, "evidence/nested/evi.yaml", {
+            "schema_version": "0.3", "document_type": "evidence", "id": "evi",
+            "observed_at": "2026-08-28T00:00:00Z", "observation": "x",
+            "interpretation": {"direction": "support", "diagnosticity": "low", "novelty": "low", "confidence": "low"},
+            "targets": ["x"],
+        })
+        self.assertIn("path.unregistered", self.errors())
+
+    def test_invalid_top_level_coordination_paths_fail_closed(self):
+        invalid = (
+            "coordination/foo.yaml",
+            "coordination/hub/foo.yaml",
+            "coordination/random/runtime.yaml",
+            "coordination/hub/nested/runtime.yaml",
+        )
+        for path in invalid:
+            with self.subTest(path=path):
+                td = tempfile.TemporaryDirectory()
+                self.addCleanup(td.cleanup)
+                instance = make_instance(Path(td.name))
+                write_yaml(instance, path, {"schema_version": "0.3", "document_type": "hub_runtime"})
+                self.assertIn("path.unregistered", self.errors(instance))
+
+    def test_registry_ambiguity_fails_closed_without_first_match(self):
+        import re
+        from unittest.mock import patch
+        duplicate_rules = (
+            (re.compile(r"config/instance\.yaml"), "instance_config"),
+            (re.compile(r"config/instance\.yaml"), "instance_config"),
+        )
+        with patch("scripts.validate_learning_os.INSTANCE_CANONICAL_PATH_RULES", duplicate_rules):
+            self.assertIn("path.ambiguous", self.errors())
+
+    def test_five_previously_missing_types_pass_on_canonical_paths(self):
+        for path, document_type in (
+            ("topics/topic/execution/daily/2026-08-28.yaml", "daily_execution"),
+            ("topics/topic/coordination/branches/main/report.yaml", "branch_report"),
+            ("topics/topic/coordination/events/evt.yaml", "coordination_event"),
+            ("coordination/hub/runtime.yaml", "hub_runtime"),
+            ("topics/topic/coordination/topic-report.yaml", "topic_report"),
+        ):
+            write_yaml(self.instance, path, {"schema_version": "0.3", "document_type": document_type})
+        self.assert_pass()
+
+    def test_five_previously_missing_types_fail_off_family(self):
+        for path, document_type in (
+            ("topics/topic/execution/daily-extra/x.yaml", "daily_execution"),
+            ("topics/topic/coordination/reports/main.yaml", "branch_report"),
+            ("topics/topic/coordination/event/evt.yaml", "coordination_event"),
+            ("coordination/hub/foo.yaml", "hub_runtime"),
+            ("topics/topic/coordination/report.yaml", "topic_report"),
+        ):
+            with self.subTest(document_type=document_type):
+                td = tempfile.TemporaryDirectory()
+                self.addCleanup(td.cleanup)
+                instance = make_instance(Path(td.name))
+                write_yaml(instance, path, {"schema_version": "0.3", "document_type": document_type})
+                self.assertIn("path.unregistered", self.errors(instance))
+
+    def test_hub_runtime_top_level_coordination_is_narrowly_allowed(self):
+        write_yaml(self.instance, "coordination/hub/runtime.yaml", {
+            "schema_version": "0.3", "document_type": "hub_runtime",
+        })
+        self.assert_pass()
+
+    def test_both_learning_handoff_own_storage_families_pass(self):
+        doc = {
+            "schema_version": "0.3", "document_type": "learning_handoff",
+            "topic": "topic", "branch_id": "branch", "lineage_id": "lineage",
+            "from_generation": 1, "to_generation": 2,
+        }
+        write_yaml(self.instance, "topics/topic/handoffs/lineage/C01-to-C02.yaml", doc)
+        write_yaml(self.instance, "topics/topic/subtopics/sub/handoffs/lineage/C02-to-C03.yaml", {
+            **doc, "from_generation": 2, "to_generation": 3,
+        })
+        self.assert_pass()
+
+    def test_flat_evidence_family_passes(self):
+        write_yaml(self.instance, "evidence/evi.yaml", {
+            "schema_version": "0.3", "document_type": "evidence", "id": "evi",
+            "observed_at": "2026-08-28T00:00:00Z", "observation": "x",
+            "interpretation": {"direction": "support", "diagnosticity": "low", "novelty": "low", "confidence": "low"},
+            "targets": ["x"],
+        })
+        self.assert_pass()
+
+
 if __name__ == "__main__":
     unittest.main()

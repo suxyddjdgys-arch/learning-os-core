@@ -286,19 +286,19 @@ class DeploymentValidationTests(unittest.TestCase):
         self.assertIn("deployment.epoch", self.errors(contract(deployment={"epoch": "2"})))
 
     def test_fail_unknown_write_state(self):
-        self.assertIn("deployment.write_state", self.errors(contract(deployment={"write_state": "paused"})))
+        self.assertIn("deployment.write_state", self.errors(contract(deployment={"write_state": "paused")))
 
     def test_fail_legacy_topology(self):
-        self.assertIn("deployment.topology", self.errors(contract(deployment={"topology": "legacy"})))
+        self.assertIn("deployment.topology", self.errors(contract(deployment={"topology": "legacy")))
 
     def test_fail_non_integer_core_id(self):
         self.assertIn("deployment.core_repository_id", self.errors(contract(core={"repository_id": "1343815302"})))
 
     def test_fail_abbreviated_commit(self):
-        self.assertIn("deployment.core_commit", self.errors(contract(core={"commit": "fb7b2aa"})))
+        self.assertIn("deployment.core_commit", self.errors(contract(core={"commit": "fb7b2aa")))
 
     def test_fail_branch_name_as_commit(self):
-        self.assertIn("deployment.core_commit", self.errors(contract(core={"commit": "main"})))
+        self.assertIn("deployment.core_commit", self.errors(contract(core={"commit": "main")))
 
     # ===== Negative: 身份 / provenance fail closed =====
 
@@ -386,6 +386,12 @@ class DeploymentValidationTests(unittest.TestCase):
         # Instance 缺 config/instance.yaml → validate_instance FAIL 透传。
         (self.instance_root / "config" / "instance.yaml").unlink()
         self.assertIn("instance.config_missing", self.errors())
+
+    def test_instance_unregistered_path_failure_propagates(self):
+        write_yaml(self.instance_root, "learner/random/foo.yaml", {
+            "schema_version": "0.3", "document_type": "learner_model",
+        })
+        self.assertIn("path.unregistered", self.errors())
 
     def test_handoff_integrity_failure_propagates_from_instance(self):
         handoff = "topics/topic-a/subtopics/sub-a/handoffs/lineage-a/C01-to-C02.yaml"
